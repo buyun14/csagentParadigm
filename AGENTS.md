@@ -19,10 +19,25 @@
 │   └── start.sh            # 生产环境启动脚本
 ├── src/
 │   ├── app/                # 页面路由与布局
-│   ├── components/ui/      # Shadcn UI 组件库
+│   │   └── page.tsx        # 主页 - 汽车营销客服Agent聊天界面
+│   ├── components/
+│   │   ├── ui/             # Shadcn UI 组件库
+│   │   ├── chat/           # 聊天组件
+│   │   │   ├── chat-area.tsx   # 聊天消息区域
+│   │   │   └── chat-input.tsx  # 聊天输入框
+│   │   ├── debug/          # 调试面板
+│   │   │   └── debug-panel.tsx # Agent调试面板（状态机/槽位/决策路径）
+│   │   └── layout/         # 布局组件
+│   │       └── top-bar.tsx     # 顶部状态栏（通话信息）
 │   ├── hooks/              # 自定义 Hooks
 │   ├── lib/                # 工具库
-│   │   └── utils.ts        # 通用工具函数 (cn)
+│   │   ├── utils.ts        # 通用工具函数 (cn)
+│   │   └── agent/          # Agent 核心引擎
+│   │       ├── types.ts        # 类型定义（状态/消息/槽位/决策）
+│   │       ├── knowledge-base.ts # 车辆知识库（品牌/车系/模糊查询）
+│   │       ├── intent.ts       # 意图识别 + 实体抽取
+│   │       ├── state-machine.ts # 对话状态机 + 回复生成
+│   │       └── engine.ts       # Agent 主引擎（整合各模块）
 │   └── server.ts           # 自定义服务端入口
 ├── next.config.ts          # Next.js 配置
 ├── package.json            # 项目依赖管理
@@ -63,3 +78,18 @@
 
 - 模板默认预装核心组件库 `shadcn/ui`，位于`src/components/ui/`目录下
 - Next.js 项目**必须默认**采用 shadcn/ui 组件、风格和规范，**除非用户指定用其他的组件和规范。**
+
+## Agent 架构说明
+
+本项目实现了一个汽车营销外呼客服 Agent 原型，核心模块位于 `src/lib/agent/`：
+
+- **types.ts**：定义所有类型（对话状态、消息、槽位、决策路径等）
+- **knowledge-base.ts**：车辆知识库，支持品牌/车系/动力类型/车身类型的模糊查询
+- **intent.ts**：意图识别引擎，支持18+种意图类型和实体抽取（品牌/车系/城市/时间/姓氏等）
+- **state-machine.ts**：对话状态机，管理7个主流程状态和4种异常状态，生成回复
+- **engine.ts**：Agent 主引擎，整合感知→记忆→规划→行动→输出完整循环
+
+UI 组件：
+- `src/components/chat/`：聊天界面（消息气泡 + 输入框）
+- `src/components/debug/`：调试面板（状态机可视化 + 槽位追踪 + 决策路径展示）
+- `src/components/layout/`：顶部状态栏（通话信息）
