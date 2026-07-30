@@ -1,5 +1,3 @@
-'use client';
-
 import type {
   AgentState,
   AgentDecision,
@@ -7,6 +5,8 @@ import type {
   CollectedSlots,
   MainDialogState,
   ExceptionState,
+  AgentMode,
+  LLMChatResponse,
 } from './types';
 import { recognizeIntent } from './intent';
 import { generateResponse } from './state-machine';
@@ -47,13 +47,199 @@ export function createInitialState(): AgentState {
     lastDecision: null,
     turnCount: 0,
     isProcessing: false,
+    responseSource: 'rule',
+    llmLatency: null,
+    llmRawResponse: null,
   };
 }
 
 /**
- * 处理客户输入，返回新的 Agent 状态
+ * 调用 LLM API
  */
-export function processCustomerInput(
+async function callLLMAgent(
+  customerInput: string,
+  currentState: AgentState
+): Promise<{
+  success: boolean;
+  data?: LLMChatResponse & { latency: number };
+  error?: string;
+}> {
+  try {
+    const recentMessages = currentState.messages
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch('/api/agent/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customerInput,
+        currentState: currentState.currentState,
+        exceptionState: currentState.exceptionState,
+        collectedSlots: currentState.collectedSlots,
+        recentMessages,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    const data = await response.json();
+
+    // 检查是否有 error 字段（LLM 调用失败或格式异常）
+    if (data.error) {
+      return { success: false, error: data.error };
+    }
+
+    return { success: true, data };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * 从 LLM 返回的 entities 更新槽位
+ */
+function updateSlotsFromEntities(
+  currentSlots: CollectedSlots,
+  entities: Record<string, string>
+): CollectedSlots {
+  const newSlots = { ...currentSlots };
+  if (entities.brand) newSlots.brand = entities.brand;
+  if (entities.series) newSlots.series = entities.series;
+  if (entities.city) newSlots.city = entities.city;
+  if (entities.timing) newSlots.timing = entities.timing;
+  if (entities.surname) newSlots.surname = entities.surname;
+  if (entities.phoneTail) newSlots.phoneTail = entities.phoneTail;
+  if (entities.vehicleType) newSlots.vehicleType = entities.vehicleType;
+  if (entities.powerType) newSlots.powerType = entities.powerType;
+  return newSlots;
+}
+
+/**
+ * 将 LLM emotion 映射为内部 emotion
+ */
+function mapEmotion(emotion: string): 'neutral' | 'positive' | 'negative' | 'angry' {
+  switch (emotion) {
+    case 'interested': return 'positive';
+    case 'annoyed': return 'negative';
+    case 'angry': return 'angry';
+    default: return 'neutral';
+  }
+}
+
+/**
+ * 将 LLM emotion 映射为异常状态
+ */
+function mapEmotionToException(emotion: string, intent: string): ExceptionState {
+  if (intent === 'abuse' || emotion === 'angry') return 'ABUSE';
+  if (intent === 'dislike') return 'ABUSE';
+  if (intent === 'off_topic') return 'OFF_TRACK';
+  if (intent === 'unclear') return 'UNCLEAR';
+  if (intent === 'ask_price' || intent === 'out_of_scope') return 'OUT_OF_SCOPE';
+  return 'NONE';
+}
+
+/**
+ * 处理客户输入 - LLM 模式
+ */
+async function processWithLLM(
+  currentState: AgentState,
+  customerInput: string
+): Promise<{
+  newState: AgentState;
+  customerMessage: ChatMessage;
+  agentMessage: ChatMessage;
+  rawResponse: string | null;
+  latency: number | null;
+}> {
+  const customerMessage: ChatMessage = {
+    id: `msg-c-${Date.now()}`,
+    role: 'customer',
+    content: customerInput,
+    timestamp: Date.now(),
+  };
+
+  const llmResult = await callLLMAgent(customerInput, currentState);
+
+  // LLM 调用失败 → 降级到规则引擎
+  if (!llmResult.success || !llmResult.data) {
+    const ruleResult = processWithRule(currentState, customerInput);
+    return {
+      ...ruleResult,
+      newState: {
+        ...ruleResult.newState,
+        responseSource: 'fallback',
+        llmLatency: null,
+        llmRawResponse: null,
+      },
+      rawResponse: null,
+      latency: null,
+    };
+  }
+
+  const { data } = llmResult;
+
+  // 更新槽位
+  const updatedSlots = updateSlotsFromEntities(currentState.collectedSlots, data.entities);
+
+  // 构建决策路径
+  const decision: AgentDecision = {
+    perception: {
+      intent: data.intent as AgentDecision['perception']['intent'],
+      entities: data.entities,
+      emotion: mapEmotion(data.emotion),
+    },
+    memory: {
+      currentState: currentState.currentState,
+      exceptionState: currentState.exceptionState,
+      collectedSlots: { ...currentState.collectedSlots },
+    },
+    planning: {
+      reasoning: data.reasoning || '[LLM] ' + data.intent,
+      nextState: data.next_state as MainDialogState,
+      action: 'LLM 生成回复',
+    },
+    output: data.response,
+  };
+
+  const agentMessage: ChatMessage = {
+    id: `msg-a-${Date.now()}`,
+    role: 'agent',
+    content: data.response,
+    timestamp: Date.now(),
+  };
+
+  const newState: AgentState = {
+    currentState: data.next_state as MainDialogState,
+    exceptionState: mapEmotionToException(data.emotion, data.intent),
+    collectedSlots: updatedSlots,
+    messages: [...currentState.messages, customerMessage, agentMessage],
+    lastDecision: decision,
+    turnCount: currentState.turnCount + 1,
+    isProcessing: false,
+    responseSource: 'llm',
+    llmLatency: data.latency,
+    llmRawResponse: JSON.stringify(data, null, 2),
+  };
+
+  return {
+    newState,
+    customerMessage,
+    agentMessage,
+    rawResponse: JSON.stringify(data, null, 2),
+    latency: data.latency,
+  };
+}
+
+/**
+ * 处理客户输入 - 规则引擎模式
+ */
+function processWithRule(
   currentState: AgentState,
   customerInput: string
 ): { newState: AgentState; customerMessage: ChatMessage; agentMessage: ChatMessage } {
@@ -67,7 +253,7 @@ export function processCustomerInput(
   // 1. 感知：意图识别 + 实体抽取
   const intentResult = recognizeIntent(customerInput);
 
-  // 2. 构建对话历史（最近10轮）
+  // 2. 构建对话历史
   const dialogHistory = currentState.messages
     .slice(-20)
     .map((m) => ({ role: m.role, content: m.content }));
@@ -81,7 +267,7 @@ export function processCustomerInput(
     dialogHistory
   );
 
-  // 4. 构建决策路径（用于调试面板）
+  // 4. 构建决策路径
   const decision: AgentDecision = {
     perception: {
       intent: intentResult.intent,
@@ -119,9 +305,31 @@ export function processCustomerInput(
     lastDecision: decision,
     turnCount: currentState.turnCount + 1,
     isProcessing: false,
+    responseSource: 'rule',
+    llmLatency: null,
+    llmRawResponse: null,
   };
 
   return { newState, customerMessage, agentMessage };
+}
+
+/**
+ * 处理客户输入（统一入口）
+ */
+export async function processCustomerInput(
+  currentState: AgentState,
+  customerInput: string,
+  mode: AgentMode = 'rule'
+): Promise<{ newState: AgentState; customerMessage: ChatMessage; agentMessage: ChatMessage }> {
+  if (mode === 'llm') {
+    const result = await processWithLLM(currentState, customerInput);
+    return {
+      newState: result.newState,
+      customerMessage: result.customerMessage,
+      agentMessage: result.agentMessage,
+    };
+  }
+  return processWithRule(currentState, customerInput);
 }
 
 // 导出知识库供外部使用

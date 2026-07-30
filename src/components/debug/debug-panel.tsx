@@ -1,17 +1,19 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import type { AgentState, MainDialogState, ExceptionState, CollectedSlots } from '@/lib/agent/types';
+import type { AgentState, MainDialogState, ExceptionState, CollectedSlots, AgentMode } from '@/lib/agent/types';
 import { stateLabels, exceptionLabels } from '@/lib/agent/engine';
 import {
   Brain,
   Eye,
   Database,
   Route,
-  ChevronRight,
   Zap,
   Shield,
   MessageSquare,
+  Cpu,
+  Timer,
+  Code,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -19,6 +21,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface DebugPanelProps {
   agentState: AgentState;
+  mode: AgentMode;
 }
 
 // 状态机流程顺序
@@ -32,17 +35,59 @@ const stateFlow: MainDialogState[] = [
   'FAREWELL',
 ];
 
-export function DebugPanel({ agentState }: DebugPanelProps) {
-  const { currentState, exceptionState, collectedSlots, lastDecision, turnCount } = agentState;
+export function DebugPanel({ agentState, mode }: DebugPanelProps) {
+  const { currentState, exceptionState, collectedSlots, lastDecision, turnCount, responseSource, llmLatency, llmRawResponse } = agentState;
 
   return (
     <ScrollArea className="h-full">
       <div className="p-4 space-y-4">
         {/* Header */}
-        <div className="flex items-center gap-2">
-          <Brain className="h-4 w-4 text-blue-500" />
-          <h3 className="text-sm font-semibold text-slate-800">Agent 调试面板</h3>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Brain className="h-4 w-4 text-blue-500" />
+            <h3 className="text-sm font-semibold text-slate-800">Agent 调试面板</h3>
+          </div>
+          {/* Mode indicator */}
+          <div className="flex items-center gap-1.5">
+            <div className={cn(
+              'w-2 h-2 rounded-full',
+              responseSource === 'llm' && 'bg-emerald-500',
+              responseSource === 'rule' && 'bg-amber-500',
+              responseSource === 'fallback' && 'bg-red-500'
+            )} />
+            <span className={cn(
+              'text-[10px] font-medium',
+              responseSource === 'llm' && 'text-emerald-600',
+              responseSource === 'rule' && 'text-amber-600',
+              responseSource === 'fallback' && 'text-red-600'
+            )}>
+              {responseSource === 'llm' ? 'LLM' : responseSource === 'rule' ? '规则引擎' : '已降级'}
+            </span>
+          </div>
         </div>
+
+        {/* LLM Info */}
+        {mode === 'llm' && (
+          <div className="flex items-center gap-3 p-2 rounded-md bg-slate-50 border border-slate-100">
+            <div className="flex items-center gap-1.5">
+              <Cpu className="h-3 w-3 text-slate-400" />
+              <span className="text-[10px] text-slate-500">
+                {mode === 'llm' ? 'LLM 模式' : '规则引擎模式'}
+              </span>
+            </div>
+            {llmLatency !== null && (
+              <div className="flex items-center gap-1">
+                <Timer className="h-3 w-3 text-slate-400" />
+                <span className="text-[10px] font-mono text-slate-600">{llmLatency}ms</span>
+              </div>
+            )}
+            {responseSource === 'fallback' && (
+              <Badge variant="outline" className="text-[9px] h-4 px-1 border-red-200 text-red-500">
+                降级
+              </Badge>
+            )}
+          </div>
+        )}
 
         {/* State Machine */}
         <Section icon={<Route className="h-3.5 w-3.5" />} title="对话状态机">
@@ -79,9 +124,6 @@ export function DebugPanel({ agentState }: DebugPanelProps) {
                     <Badge className="bg-emerald-50 text-emerald-600 border-emerald-200 text-[10px] h-4 px-1.5 ml-auto">
                       已完成
                     </Badge>
-                  )}
-                  {index < stateFlow.length - 1 && (
-                    <ChevronRight className="h-3 w-3 text-slate-300 absolute right-4" />
                   )}
                 </div>
               );
@@ -174,14 +216,30 @@ export function DebugPanel({ agentState }: DebugPanelProps) {
                 {lastDecision.output}
               </div>
             </Section>
+
+            {/* LLM Raw Response */}
+            {llmRawResponse && mode === 'llm' && (
+              <>
+                <Separator />
+                <Section icon={<Code className="h-3.5 w-3.5" />} title="LLM 原始返回">
+                  <pre className="text-[10px] text-slate-500 bg-slate-50 rounded-md p-2 overflow-x-auto border border-slate-100 leading-relaxed max-h-[200px] overflow-y-auto">
+                    {llmRawResponse}
+                  </pre>
+                </Section>
+              </>
+            )}
           </>
         )}
 
         {/* Stats */}
         <Separator />
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <StatCard label="对话轮次" value={turnCount.toString()} />
           <StatCard label="消息总数" value={agentState.messages.length.toString()} />
+          <StatCard
+            label="LLM 延迟"
+            value={llmLatency !== null ? `${llmLatency}ms` : '-'}
+          />
         </div>
       </div>
     </ScrollArea>
@@ -204,15 +262,15 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between">
       <span className="text-[10px] text-slate-400 uppercase tracking-wider">{label}</span>
-      <span className="text-xs text-slate-700">{typeof value === 'string' ? value : value}</span>
+      <span className="text-xs text-slate-700">{value}</span>
     </div>
   );
 }
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-slate-50 rounded-lg p-2.5 text-center border border-slate-100">
-      <div className="text-lg font-bold text-slate-800 font-mono">{value}</div>
+    <div className="bg-slate-50 rounded-lg p-2 text-center border border-slate-100">
+      <div className="text-sm font-bold text-slate-800 font-mono">{value}</div>
       <div className="text-[10px] text-slate-400 mt-0.5">{label}</div>
     </div>
   );
@@ -286,6 +344,12 @@ const intentLabels: Record<string, string> = {
   ask_recommend: '请求推荐',
   wait: '等待',
   unknown: '未知',
+  provide_brand: '提供品牌',
+  provide_model: '提供车型',
+  provide_city: '提供城市',
+  provide_time: '提供时间',
+  provide_surname: '提供姓氏',
+  ask_price: '询问价格',
 };
 
 // 情绪标签

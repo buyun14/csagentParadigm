@@ -90,6 +90,34 @@ export interface AgentState {
   lastDecision: AgentDecision | null;
   turnCount: number;
   isProcessing: boolean;
+  /** 当前回复来源：LLM 或规则引擎 */
+  responseSource: 'llm' | 'rule' | 'fallback';
+  /** LLM 调用延迟（毫秒） */
+  llmLatency: number | null;
+  /** LLM 原始返回（用于调试） */
+  llmRawResponse: string | null;
+}
+
+// Agent 模式
+export type AgentMode = 'llm' | 'rule';
+
+// LLM 请求参数
+export interface LLMChatRequest {
+  customerInput: string;
+  currentState: MainDialogState;
+  exceptionState: ExceptionState;
+  collectedSlots: CollectedSlots;
+  recentMessages: Array<{ role: string; content: string }>;
+}
+
+// LLM 返回结构
+export interface LLMChatResponse {
+  intent: string;
+  entities: Record<string, string>;
+  emotion: 'neutral' | 'interested' | 'annoyed' | 'angry';
+  next_state: string;
+  response: string;
+  reasoning: string;
 }
 
 // 知识库 - 车系信息

@@ -19,25 +19,27 @@
 │   └── start.sh            # 生产环境启动脚本
 ├── src/
 │   ├── app/                # 页面路由与布局
-│   │   └── page.tsx        # 主页 - 汽车营销客服Agent聊天界面
+│   │   ├── page.tsx        # 主页 - 汽车营销客服Agent聊天界面
+│   │   └── api/agent/chat/route.ts # LLM Agent API 路由
 │   ├── components/
 │   │   ├── ui/             # Shadcn UI 组件库
 │   │   ├── chat/           # 聊天组件
 │   │   │   ├── chat-area.tsx   # 聊天消息区域
 │   │   │   └── chat-input.tsx  # 聊天输入框
 │   │   ├── debug/          # 调试面板
-│   │   │   └── debug-panel.tsx # Agent调试面板（状态机/槽位/决策路径）
+│   │   │   └── debug-panel.tsx # Agent调试面板（状态机/槽位/决策路径/LLM信息）
 │   │   └── layout/         # 布局组件
 │   │       └── top-bar.tsx     # 顶部状态栏（通话信息）
 │   ├── hooks/              # 自定义 Hooks
 │   ├── lib/                # 工具库
 │   │   ├── utils.ts        # 通用工具函数 (cn)
 │   │   └── agent/          # Agent 核心引擎
-│   │       ├── types.ts        # 类型定义（状态/消息/槽位/决策）
+│   │       ├── types.ts        # 类型定义（状态/消息/槽位/决策/LLM响应）
 │   │       ├── knowledge-base.ts # 车辆知识库（品牌/车系/模糊查询）
-│   │       ├── intent.ts       # 意图识别 + 实体抽取
+│   │       ├── intent.ts       # 意图识别 + 实体抽取（规则引擎降级）
 │   │       ├── state-machine.ts # 对话状态机 + 回复生成
-│   │       └── engine.ts       # Agent 主引擎（整合各模块）
+│   │       ├── prompt-builder.ts # LLM System Prompt 构建（Harness）
+│   │       └── engine.ts       # Agent 主引擎（LLM模式+规则引擎降级）
 │   └── server.ts           # 自定义服务端入口
 ├── next.config.ts          # Next.js 配置
 ├── package.json            # 项目依赖管理
@@ -81,15 +83,31 @@
 
 ## Agent 架构说明
 
-本项目实现了一个汽车营销外呼客服 Agent 原型，核心模块位于 `src/lib/agent/`：
+本项目实现了一个汽车营销外呼客服 Agent 原型，支持两种运行模式：
 
-- **types.ts**：定义所有类型（对话状态、消息、槽位、决策路径等）
+### 双模式架构
+- **LLM 模式**：客户输入 → 构建 System Prompt（状态+历史+知识库+护栏）→ LLM 生成决策和回复 → 护栏二次检查 → 输出
+- **规则引擎模式**：客户输入 → 关键词匹配意图 → 模板话术 → 输出（降级方案）
+
+### 核心模块 (`src/lib/agent/`)
+- **types.ts**：定义所有类型（对话状态、消息、槽位、决策路径、LLM 响应等）
 - **knowledge-base.ts**：车辆知识库，支持品牌/车系/动力类型/车身类型的模糊查询
-- **intent.ts**：意图识别引擎，支持18+种意图类型和实体抽取（品牌/车系/城市/时间/姓氏等）
+- **intent.ts**：意图识别引擎（规则引擎降级），支持18+种意图类型和实体抽取
 - **state-machine.ts**：对话状态机，管理7个主流程状态和4种异常状态，生成回复
-- **engine.ts**：Agent 主引擎，整合感知→记忆→规划→行动→输出完整循环
+- **prompt-builder.ts**：LLM System Prompt 构建器（Harness 核心），分层注入角色/状态/知识/护栏
+- **engine.ts**：Agent 主引擎，支持 LLM 模式 + 规则引擎降级，10秒超时自动降级
+
+### 后端 API (`src/app/api/agent/chat/route.ts`)
+- 使用 `coze-coding-dev-sdk` 调用 LLM
+- 环境变量：`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`
+- LLM 不可用时返回 200 + error 字段，前端触发降级
+
+### 降级策略
+- LLM 调用超时（10秒）或失败 → 自动 fallback 到规则引擎
+- LLM 返回格式异常 → 尝试解析，解析失败则用规则引擎
+- 调试面板标记当前回复来源（LLM / 规则引擎降级）
 
 UI 组件：
 - `src/components/chat/`：聊天界面（消息气泡 + 输入框）
-- `src/components/debug/`：调试面板（状态机可视化 + 槽位追踪 + 决策路径展示）
-- `src/components/layout/`：顶部状态栏（通话信息）
+- `src/components/debug/`：调试面板（状态机可视化 + 槽位追踪 + 决策路径 + LLM 信息）
+- `src/components/layout/`：顶部状态栏（通话信息 + 模式切换）
