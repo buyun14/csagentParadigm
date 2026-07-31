@@ -21,7 +21,8 @@ const stateGoals: Record<MainDialogState, string> = {
 };
 
 // 格式化槽位信息
-function formatSlots(slots: CollectedSlots): string {
+function formatSlots(slots: CollectedSlots | undefined | null): string {
+  if (!slots) return '品牌: 未收集, 车系: 未收集, 城市: 未收集, 时间: 未收集, 姓氏: 未收集, 手机尾号: 未收集';
   const items = [
     `品牌: ${slots.brand || '未收集'}`,
     `车系: ${slots.series || slots.model || '未收集'}`,
