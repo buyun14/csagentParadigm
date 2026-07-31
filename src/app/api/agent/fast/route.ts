@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
     } = body;
 
     // 获取相关品牌数据
-    const kbData = getRelevantKBData(collected_slots?.brand);
+    const kbData = getRelevantKBData(collected_slots.brand);
 
     // 构建精简版 prompt
     const { systemPrompt, userMessage } = buildSlimPrompt({
