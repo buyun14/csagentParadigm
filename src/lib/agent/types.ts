@@ -94,12 +94,18 @@ export interface AgentState {
   lastDecision: AgentDecision | null;
   turnCount: number;
   isProcessing: boolean;
-  /** 当前回复来源：LLM 或规则引擎 */
-  responseSource: 'llm' | 'rule' | 'fallback';
+  /** 当前回复来源：LLM / 缓存 / 规则引擎 / 快通道 / 慢通道 */
+  responseSource: ResponseSource;
   /** 详细延迟指标 */
   latencyMetrics: LatencyMetrics | null;
   /** LLM 原始返回（用于调试） */
   llmRawResponse: string | null;
+  /** 双通道状态 */
+  dualChannel: DualChannelState | null;
+  /** 当前模型参数 */
+  currentModelConfig: LLMModelConfig | null;
+  /** Prompt token 估算 */
+  promptTokenEstimate: number | null;
 }
 
 /** 详细延迟指标（用于性能分析） */
@@ -119,7 +125,41 @@ export interface LatencyMetrics {
 }
 
 // Agent 模式
-export type AgentMode = 'llm' | 'rule';
+export type AgentMode = 'llm' | 'rule' | 'dual';
+
+// 回复来源
+export type ResponseSource = 'llm' | 'rule' | 'fallback' | 'cache' | 'fast' | 'slow';
+
+// 快通道响应
+export interface FastChannelResponse {
+  intent: string;
+  next_state: string;
+  response: string;
+}
+
+// 慢通道响应
+export interface SlowChannelResponse {
+  emotion: string;
+  entities: Record<string, string>;
+  reasoning: string;
+  guardrail_check: string;
+}
+
+// 缓存条目
+export interface CacheEntry {
+  key: string;
+  response: string;
+  intent: string;
+  next_state: string;
+}
+
+// 双通道状态
+export interface DualChannelState {
+  fastStatus: 'pending' | 'done' | 'timeout' | 'error';
+  slowStatus: 'pending' | 'done' | 'timeout' | 'error';
+  fastLatency: { firstToken: number; total: number } | null;
+  slowLatency: number | null;
+}
 
 // LLM 请求参数
 export interface LLMChatRequest {
@@ -139,6 +179,8 @@ export interface LLMChatRequest {
  * 注意：不同模型支持的参数可能不同，未支持的参数会被忽略
  */
 export interface LLMModelConfig {
+  /** 模型名称 */
+  model?: string;
   /** 采样温度，控制随机性 (0-2)。值越高输出越随机，值越低输出越确定。建议: 0.7-0.9 用于创意任务，0.1-0.3 用于结构化输出 */
   temperature?: number;
   /** 核采样概率 (0-1)。值越小输出越确定。与 temperature 二选一使用 */

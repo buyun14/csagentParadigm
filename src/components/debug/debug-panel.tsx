@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import type { AgentState, MainDialogState, ExceptionState, CollectedSlots, AgentMode } from '@/lib/agent/types';
+import type { AgentState, MainDialogState, ExceptionState, CollectedSlots, AgentMode, ResponseSource } from '@/lib/agent/types';
 import { stateLabels, exceptionLabels } from '@/lib/agent/engine';
 import {
   Brain,
@@ -17,6 +17,8 @@ import {
   Code,
   ChevronDown,
   ChevronRight,
+  Gauge,
+  Layers,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -57,6 +59,8 @@ const emotionLabels: Record<string, string> = {
   positive: '积极',
   negative: '消极',
   angry: '愤怒',
+  interested: '感兴趣',
+  annoyed: '烦躁',
 };
 
 // 实体标签
@@ -69,6 +73,16 @@ const entityLabels: Record<string, string> = {
   phoneTail: '手机尾号',
   vehicleType: '车身类型',
   powerType: '动力类型',
+};
+
+// 回复来源标签和颜色
+const sourceLabels: Record<ResponseSource, { label: string; color: string; bgColor: string }> = {
+  llm: { label: 'LLM', color: 'text-emerald-600', bgColor: 'bg-emerald-500' },
+  fast: { label: '快通道', color: 'text-blue-600', bgColor: 'bg-blue-500' },
+  slow: { label: '慢通道', color: 'text-violet-600', bgColor: 'bg-violet-500' },
+  cache: { label: '缓存', color: 'text-amber-600', bgColor: 'bg-amber-500' },
+  rule: { label: '规则', color: 'text-slate-600', bgColor: 'bg-slate-500' },
+  fallback: { label: '降级', color: 'text-red-600', bgColor: 'bg-red-500' },
 };
 
 interface DebugPanelProps {
@@ -128,7 +142,22 @@ function Section({
 }
 
 export function DebugPanel({ agentState, mode }: DebugPanelProps) {
-  const { currentState, exceptionState, collectedSlots, lastDecision, turnCount, responseSource, latencyMetrics, llmRawResponse } = agentState;
+  const { 
+    currentState, 
+    exceptionState, 
+    collectedSlots, 
+    lastDecision, 
+    turnCount, 
+    responseSource, 
+    latencyMetrics, 
+    llmRawResponse,
+    dualChannel,
+    currentModelConfig,
+    promptTokenEstimate,
+  } = agentState;
+
+  const sourceInfo = sourceLabels[responseSource];
+  const isLLMMode = mode === 'llm' || mode === 'dual';
 
   return (
     <ScrollArea className="h-full">
@@ -139,31 +168,46 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
             <Brain className="h-4 w-4 text-blue-500" />
             <h3 className="text-sm font-semibold text-slate-800">Agent 调试</h3>
           </div>
-          {/* Mode indicator */}
+          {/* Source indicator */}
           <div className="flex items-center gap-1.5">
-            <div className={cn(
-              'w-2 h-2 rounded-full',
-              responseSource === 'llm' && 'bg-emerald-500',
-              responseSource === 'rule' && 'bg-amber-500',
-              responseSource === 'fallback' && 'bg-red-500'
-            )} />
-            <span className={cn(
-              'text-[10px] font-medium',
-              responseSource === 'llm' && 'text-emerald-600',
-              responseSource === 'rule' && 'text-amber-600',
-              responseSource === 'fallback' && 'text-red-600'
-            )}>
-              {responseSource === 'llm' ? 'LLM' : responseSource === 'rule' ? '规则' : '降级'}
+            <div className={cn('w-2 h-2 rounded-full', sourceInfo.bgColor)} />
+            <span className={cn('text-[10px] font-medium', sourceInfo.color)}>
+              {sourceInfo.label}
             </span>
           </div>
         </div>
 
-        {/* Performance Metrics - Always visible, compact */}
-        {mode === 'llm' && latencyMetrics && (
+        {/* Dual Channel Status */}
+        {mode === 'dual' && dualChannel && (
+          <div className="p-2 rounded-md bg-gradient-to-r from-blue-50 to-violet-50 border border-blue-100">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Layers className="h-3 w-3 text-blue-500" />
+              <span className="text-[10px] font-semibold text-blue-700">双通道</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <ChannelStatus 
+                label="快通道" 
+                status={dualChannel.fastStatus}
+                latency={dualChannel.fastLatency ? `${dualChannel.fastLatency.firstToken}ms / ${dualChannel.fastLatency.total}ms` : null}
+              />
+              <ChannelStatus 
+                label="慢通道" 
+                status={dualChannel.slowStatus}
+                latency={dualChannel.slowLatency ? `${dualChannel.slowLatency}ms` : null}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Performance Metrics */}
+        {isLLMMode && latencyMetrics && (
           <div className="p-2 rounded-md bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100">
             <div className="flex items-center gap-1.5 mb-1.5">
               <Timer className="h-3 w-3 text-blue-500" />
               <span className="text-[10px] font-semibold text-blue-700">性能指标</span>
+              {promptTokenEstimate !== null && promptTokenEstimate > 0 && (
+                <span className="text-[9px] text-blue-500 ml-auto">~{promptTokenEstimate} tokens</span>
+              )}
             </div>
             <div className="grid grid-cols-3 gap-x-2 gap-y-1">
               <LatencyItem label="首字" value={latencyMetrics.firstToken} color="emerald" />
@@ -174,6 +218,22 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
               <LatencyItem label="生成" value={latencyMetrics.generation} color="violet" />
             </div>
           </div>
+        )}
+
+        {/* Model Config Overview */}
+        {isLLMMode && currentModelConfig && (
+          <Section 
+            icon={<Gauge className="h-3.5 w-3.5" />} 
+            title="模型配置"
+            defaultOpen={false}
+          >
+            <div className="grid grid-cols-2 gap-1">
+              <InfoRow label="Temperature" value={currentModelConfig.temperature?.toFixed(1) ?? '0.7'} />
+              <InfoRow label="Top P" value={currentModelConfig.top_p?.toFixed(1) ?? '0.9'} />
+              <InfoRow label="Max Tokens" value={currentModelConfig.max_tokens?.toString() ?? '150'} />
+              <InfoRow label="Model" value={currentModelConfig.model || 'default'} />
+            </div>
+          </Section>
         )}
 
         {/* State Machine */}
@@ -213,7 +273,7 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
           </div>
         </Section>
 
-        {/* Exception State - Only show when active */}
+        {/* Exception State */}
         {exceptionState !== 'NONE' && (
           <Section 
             icon={<Shield className="h-3.5 w-3.5 text-amber-500" />} 
@@ -248,7 +308,7 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
 
         <Separator />
 
-        {/* Last Decision - Collapsible sections */}
+        {/* Last Decision */}
         {lastDecision && (
           <>
             <Section 
@@ -266,7 +326,7 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
                     lastDecision.perception.emotion === 'neutral' && 'border-slate-200 text-slate-500'
                   )}
                 >
-                  {emotionLabels[lastDecision.perception.emotion]}
+                  {emotionLabels[lastDecision.perception.emotion] || lastDecision.perception.emotion}
                 </Badge>
               }
             >
@@ -311,8 +371,8 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
               </div>
             </Section>
 
-            {/* LLM Raw Response - Collapsed by default */}
-            {llmRawResponse && mode === 'llm' && (
+            {/* LLM Raw Response */}
+            {llmRawResponse && isLLMMode && (
               <Section 
                 icon={<Code className="h-3.5 w-3.5" />} 
                 title="LLM 原始返回"
@@ -335,6 +395,36 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
         </div>
       </div>
     </ScrollArea>
+  );
+}
+
+// 通道状态组件
+function ChannelStatus({ label, status, latency }: { label: string; status: string; latency: string | null }) {
+  const statusColors: Record<string, string> = {
+    pending: 'text-amber-500',
+    done: 'text-emerald-500',
+    timeout: 'text-red-500',
+    error: 'text-red-500',
+  };
+  const statusLabels: Record<string, string> = {
+    pending: '等待中',
+    done: '完成',
+    timeout: '超时',
+    error: '错误',
+  };
+
+  return (
+    <div className="bg-white/50 rounded p-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[9px] text-slate-500">{label}</span>
+        <span className={cn('text-[9px] font-medium', statusColors[status] || 'text-slate-400')}>
+          {statusLabels[status] || status}
+        </span>
+      </div>
+      {latency && (
+        <div className="text-[9px] text-slate-400 mt-0.5 font-mono">{latency}</div>
+      )}
+    </div>
   );
 }
 

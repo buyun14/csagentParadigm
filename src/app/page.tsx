@@ -1,45 +1,52 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { TopBar } from '@/components/layout/top-bar';
 import { ChatArea } from '@/components/chat/chat-area';
 import { ChatInput } from '@/components/chat/chat-input';
 import { DebugPanel } from '@/components/debug/debug-panel';
+import { ModelSettingsPanel } from '@/components/settings/model-settings-panel';
 import {
   createInitialState,
   processCustomerInput,
-  processWithLLMStreaming,
-  buildFinalStateFromStream,
+  processWithDualChannel,
+  buildFinalStateFromFastChannel,
+  updateStateWithSlowChannel,
+  processCacheHit,
+  checkCacheHit,
   fallbackToRuleEngine,
+  loadModelConfig,
+  saveModelConfig,
 } from '@/lib/agent/engine';
-import type { AgentState, AgentMode, ChatMessage, LatencyMetrics } from '@/lib/agent/types';
-import { PanelRightClose, PanelRightOpen, Cpu, Workflow } from 'lucide-react';
+import type { AgentState, AgentMode, ChatMessage, LLMModelConfig } from '@/lib/agent/types';
+import { PanelRightClose, PanelRightOpen, Cpu, Workflow, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 export default function Home() {
   const [agentState, setAgentState] = useState<AgentState>(createInitialState);
   const [showDebug, setShowDebug] = useState(true);
-  const [mode, setMode] = useState<AgentMode>('rule');
+  const [mode, setMode] = useState<AgentMode>('dual');
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(360);
   const [isResizing, setIsResizing] = useState(false);
+  const [modelConfig, setModelConfig] = useState<LLMModelConfig>(() => loadModelConfig());
 
-  // 用 ref 存储流式过程中的累积数据
+  // 流式数据 ref
   const streamRef = useRef<{
     content: string;
-    metadata: {
-      intent: string;
-      entities: Record<string, string>;
-      emotion: string;
-      next_state: string;
-      reasoning: string;
-      latencyMetrics: LatencyMetrics;
-      rawResponse: string;
-    } | null;
+    firstTokenLatency: number;
+    tokenEstimate: number;
     customerMessage: ChatMessage | null;
     sendTime: number;
-  }>({ content: '', metadata: null, customerMessage: null, sendTime: 0 });
+    agentMessageId: string;
+  }>({ content: '', firstTokenLatency: 0, tokenEstimate: 0, customerMessage: null, sendTime: 0, agentMessageId: '' });
+
+  // 初始化模型配置
+  useEffect(() => {
+    const saved = loadModelConfig();
+    setModelConfig(saved);
+  }, []);
 
   // 处理面板宽度调整
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -62,103 +69,136 @@ export default function Home() {
   }, []);
 
   const handleSend = useCallback(async (message: string) => {
-    if (mode === 'rule') {
-      // 规则引擎模式：同步处理
+    // 获取当前状态
+    const currentState = await new Promise<AgentState>((resolve) => {
       setAgentState((prev) => {
-        if (prev.currentState === 'FAREWELL') return prev;
-        return { ...prev, isProcessing: true };
-      });
-
-      try {
-        const currentState = await new Promise<AgentState>((resolve) => {
-          setAgentState((prev) => {
-            resolve(prev);
-            return prev;
-          });
-        });
-
-        const { newState } = processCustomerInput(currentState, message, mode);
-        setAgentState(newState);
-      } catch {
-        setAgentState((prev) => ({ ...prev, isProcessing: false }));
-      }
-    } else {
-      // LLM 模式：流式处理
-      setAgentState((prev) => {
-        if (prev.currentState === 'FAREWELL') return prev;
-        return { ...prev, isProcessing: true };
-      });
-
-      const currentState = await new Promise<AgentState>((resolve) => {
-        setAgentState((prev) => {
+        if (prev.currentState === 'FAREWELL') {
           resolve(prev);
-          return prev;
-        });
+        }
+        resolve(prev);
+        return { ...prev, isProcessing: true };
       });
+    });
 
+    if (currentState.currentState === 'FAREWELL') return;
+
+    // 规则引擎模式
+    if (mode === 'rule') {
+      const { newState } = processCustomerInput(currentState, message, mode);
+      setAgentState(newState);
+      return;
+    }
+
+    // 缓存检查（双通道和LLM模式都适用）
+    if (mode === 'dual' || mode === 'llm') {
+      const cacheResult = checkCacheHit(currentState.currentState, message);
+      if (cacheResult.hit && cacheResult.response) {
+        const { newState, customerMessage, agentMessage } = processCacheHit(
+          currentState,
+          message,
+          { response: cacheResult.response, intent: cacheResult.intent || 'unknown', next_state: cacheResult.next_state || currentState.currentState }
+        );
+        setAgentState({
+          ...newState,
+          messages: [...currentState.messages, customerMessage, agentMessage],
+        });
+        return;
+      }
+    }
+
+    // LLM 单通道模式（降级到规则引擎，因为实际应该用双通道）
+    if (mode === 'llm') {
+      const { newState } = fallbackToRuleEngine(currentState, message);
+      setAgentState({ ...newState, responseSource: 'fallback' });
+      return;
+    }
+
+    // 双通道模式
+    if (mode === 'dual') {
       // 初始化流式数据
-      streamRef.current = { content: '', metadata: null, customerMessage: null, sendTime: Date.now() };
+      streamRef.current = { 
+        content: '', 
+        firstTokenLatency: 0, 
+        tokenEstimate: 0, 
+        customerMessage: null, 
+        sendTime: Date.now(),
+        agentMessageId: `msg-a-${Date.now()}`,
+      };
 
-      const { customerMessage, agentMessageId, sendTime } = processWithLLMStreaming(
+      const { customerMessage, agentMessageId } = processWithDualChannel(
         currentState,
         message,
+        modelConfig,
         {
-          onMetadata: (data) => {
-            streamRef.current.metadata = data;
-            streamRef.current.customerMessage = customerMessage;
-            streamRef.current.sendTime = sendTime;
+          fast: {
+            onMetadata: (data) => {
+              streamRef.current.tokenEstimate = data.tokenEstimate;
+            },
+            onFirstToken: (latency) => {
+              streamRef.current.firstTokenLatency = latency;
+            },
+            onChunk: (content) => {
+              streamRef.current.content += content;
+              const accumulated = streamRef.current.content;
 
-            // 更新调试面板信息
-            setAgentState((prev) => ({
-              ...prev,
-              responseSource: 'llm',
-              latencyMetrics: data.latencyMetrics,
-              llmRawResponse: data.rawResponse,
-            }));
-          },
-          onChunk: (content) => {
-            streamRef.current.content += content;
-            const accumulated = streamRef.current.content;
-
-            // 更新消息列表中的 agent 消息内容（流式效果）
-            setAgentState((prev) => {
-              const messages = prev.messages.map((m) => {
-                if (m.id === agentMessageId) {
-                  return { ...m, content: accumulated, isStreaming: true };
-                }
-                return m;
+              // 更新消息列表中的 agent 消息内容（流式效果）
+              setAgentState((prev) => {
+                const messages = prev.messages.map((m) => {
+                  if (m.id === agentMessageId) {
+                    return { ...m, content: accumulated, isStreaming: true };
+                  }
+                  return m;
+                });
+                return { ...prev, messages };
               });
-              return { ...prev, messages };
-            });
-          },
-          onComplete: (totalLatency) => {
-            const meta = streamRef.current.metadata;
-            if (!meta || !streamRef.current.customerMessage) {
-              // 没有元数据，降级
-              setAgentState((prev) => ({ ...prev, isProcessing: false }));
+            },
+            onComplete: (data) => {
+              const totalLatency = data.latency;
+              const fullContent = data.fullContent;
+
+              // 解析快通道返回
+              const parsed = parseFastResponse(fullContent, currentState.currentState);
+              if (!parsed) {
+                // 解析失败，降级
+                const { newState } = fallbackToRuleEngine(currentState, message);
+                setAgentState({ ...newState, responseSource: 'fallback' });
+                setStreamingMessageId(null);
+                return;
+              }
+
+              streamRef.current.customerMessage = customerMessage;
+
+              const finalState = buildFinalStateFromFastChannel(
+                currentState,
+                customerMessage,
+                parsed.response,
+                parsed,
+                { firstToken: streamRef.current.firstTokenLatency, total: totalLatency, tokenEstimate: streamRef.current.tokenEstimate },
+                modelConfig
+              );
+
+              setAgentState(finalState);
               setStreamingMessageId(null);
-              return;
-            }
-
-            const finalState = buildFinalStateFromStream(
-              currentState,
-              streamRef.current.customerMessage,
-              streamRef.current.content,
-              meta,
-              totalLatency
-            );
-
-            setAgentState(finalState);
-            setStreamingMessageId(null);
+            },
+            onError: () => {
+              // 快通道失败 → 降级到规则引擎
+              const { newState } = fallbackToRuleEngine(currentState, message);
+              setAgentState({ ...newState, responseSource: 'fallback' });
+              setStreamingMessageId(null);
+            },
           },
-          onError: () => {
-            // LLM 失败 → 降级到规则引擎
-            const { newState } = fallbackToRuleEngine(currentState, message);
-            setAgentState({
-              ...newState,
-              responseSource: 'fallback',
-            });
-            setStreamingMessageId(null);
+          slow: {
+            onResult: (data) => {
+              // 异步更新调试面板（不阻塞主流程）
+              setAgentState((prev) => updateStateWithSlowChannel(prev, data, 0));
+            },
+            onError: () => {
+              // 慢通道失败不影响主流程
+              setAgentState((prev) => ({
+                ...prev,
+                dualChannel: prev.dualChannel ? { ...prev.dualChannel, slowStatus: 'error' } : null,
+              }));
+            },
           },
         }
       );
@@ -178,15 +218,20 @@ export default function Home() {
       }));
       setStreamingMessageId(agentMessageId);
     }
-  }, [mode]);
+  }, [mode, modelConfig]);
 
   const handleReset = useCallback(() => {
     setAgentState(createInitialState());
     setStreamingMessageId(null);
   }, []);
 
-  const toggleMode = useCallback(() => {
-    setMode((prev) => (prev === 'llm' ? 'rule' : 'llm'));
+  const handleModeChange = useCallback((newMode: AgentMode) => {
+    setMode(newMode);
+  }, []);
+
+  const handleModelConfigChange = useCallback((config: LLMModelConfig) => {
+    setModelConfig(config);
+    saveModelConfig(config);
   }, []);
 
   return (
@@ -201,39 +246,43 @@ export default function Home() {
       {/* Mode Toggle Bar */}
       <div className="flex items-center justify-between px-4 py-1.5 bg-white border-b border-slate-200">
         <div className="flex items-center gap-2">
-          <button
-            onClick={toggleMode}
-            className={cn(
-              'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-200',
-              mode === 'llm'
-                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-slate-200'
-            )}
-          >
-            <Cpu className="h-3 w-3" />
-            LLM 模式
-          </button>
-          <button
-            onClick={toggleMode}
-            className={cn(
-              'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-200',
-              mode === 'rule'
-                ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-slate-200'
-            )}
-          >
-            <Workflow className="h-3 w-3" />
-            规则引擎
-          </button>
+          <ModeButton 
+            active={mode === 'dual'} 
+            onClick={() => handleModeChange('dual')}
+            icon={<Zap className="h-3 w-3" />}
+            label="双通道"
+            activeClass="bg-blue-50 text-blue-700 border-blue-200"
+          />
+          <ModeButton 
+            active={mode === 'llm'} 
+            onClick={() => handleModeChange('llm')}
+            icon={<Cpu className="h-3 w-3" />}
+            label="LLM"
+            activeClass="bg-emerald-50 text-emerald-700 border-emerald-200"
+          />
+          <ModeButton 
+            active={mode === 'rule'} 
+            onClick={() => handleModeChange('rule')}
+            icon={<Workflow className="h-3 w-3" />}
+            label="规则引擎"
+            activeClass="bg-amber-50 text-amber-700 border-amber-200"
+          />
         </div>
         <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
           <div className={cn(
             'w-1.5 h-1.5 rounded-full',
-            mode === 'llm' ? 'bg-emerald-500' : 'bg-amber-500'
+            mode === 'dual' && 'bg-blue-500',
+            mode === 'llm' && 'bg-emerald-500',
+            mode === 'rule' && 'bg-amber-500'
           )} />
-          <span>{mode === 'llm' ? 'LLM 驱动中' : '规则引擎驱动中'}</span>
+          <span>
+            {mode === 'dual' ? '双通道驱动中' : mode === 'llm' ? 'LLM 驱动中' : '规则引擎驱动中'}
+          </span>
           {agentState.responseSource === 'fallback' && (
             <span className="text-red-500 ml-1">(已降级)</span>
+          )}
+          {agentState.responseSource === 'cache' && (
+            <span className="text-amber-500 ml-1">(缓存命中)</span>
           )}
         </div>
       </div>
@@ -299,11 +348,82 @@ export default function Home() {
               className="border-l border-slate-200 bg-white flex-shrink-0 overflow-hidden"
               style={{ width: panelWidth }}
             >
-              <DebugPanel agentState={agentState} mode={mode} />
+              <div className="h-full flex flex-col">
+                {/* Model Settings */}
+                {(mode === 'dual' || mode === 'llm') && (
+                  <div className="p-2 border-b border-slate-100">
+                    <ModelSettingsPanel 
+                      config={modelConfig} 
+                      onConfigChange={handleModelConfigChange}
+                    />
+                  </div>
+                )}
+                {/* Debug Panel */}
+                <div className="flex-1 overflow-hidden">
+                  <DebugPanel agentState={agentState} mode={mode} />
+                </div>
+              </div>
             </div>
           </>
         )}
       </div>
     </div>
   );
+}
+
+// Mode button component
+function ModeButton({ active, onClick, icon, label, activeClass }: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  activeClass: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-200',
+        active
+          ? activeClass + ' border'
+          : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-slate-200'
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+// 解析快通道返回的 JSON
+function parseFastResponse(content: string, currentState: string): { intent: string; next_state: string; response: string } | null {
+  try {
+    let cleaned = content.trim();
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      cleaned = jsonMatch[0];
+    }
+    if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+    }
+    const parsed = JSON.parse(cleaned);
+    if (typeof parsed.response === 'string' && typeof parsed.next_state === 'string') {
+      return {
+        intent: parsed.intent || 'unknown',
+        next_state: parsed.next_state,
+        response: parsed.response,
+      };
+    }
+  } catch {
+    // ignore
+  }
+  // 如果无法解析 JSON，把整个内容当作回复
+  if (content.trim().length > 0) {
+    return {
+      intent: 'unknown',
+      next_state: currentState,
+      response: content.trim(),
+    };
+  }
+  return null;
 }
