@@ -38,12 +38,17 @@ export async function POST(request: NextRequest) {
     // 添加当前客户输入
     messages.push({ role: 'user', content: customerInput });
 
-    // 调用 LLM
+    // 调用 LLM（从 .env 的 LLM_* 变量显式传入 SDK 配置）
     const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
-    const config = new Config();
+    const config = new Config({
+      apiKey: process.env.LLM_API_KEY,
+      baseUrl: process.env.LLM_BASE_URL,
+      modelBaseUrl: process.env.LLM_BASE_URL,
+    });
     const client = new LLMClient(config, customHeaders);
 
     const response = await client.invoke(messages, {
+      model: process.env.LLM_MODEL,
       temperature: 0.7,
     });
 
