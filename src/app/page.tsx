@@ -22,6 +22,8 @@ export default function Home() {
   const [showDebug, setShowDebug] = useState(true);
   const [mode, setMode] = useState<AgentMode>('rule');
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [panelWidth, setPanelWidth] = useState(360);
+  const [isResizing, setIsResizing] = useState(false);
 
   // 用 ref 存储流式过程中的累积数据
   const streamRef = useRef<{
@@ -38,6 +40,26 @@ export default function Home() {
     customerMessage: ChatMessage | null;
     sendTime: number;
   }>({ content: '', metadata: null, customerMessage: null, sendTime: 0 });
+
+  // 处理面板宽度调整
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = window.innerWidth - e.clientX;
+      setPanelWidth(Math.max(280, Math.min(500, newWidth)));
+    };
+    
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+    
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, []);
 
   const handleSend = useCallback(async (message: string) => {
     if (mode === 'rule') {
@@ -264,9 +286,22 @@ export default function Home() {
 
         {/* Debug Panel */}
         {showDebug && (
-          <div className="w-[360px] border-l border-slate-200 bg-white flex-shrink-0 overflow-hidden">
-            <DebugPanel agentState={agentState} mode={mode} />
-          </div>
+          <>
+            {/* Resize Handle */}
+            <div
+              className={cn(
+                'w-1 cursor-col-resize hover:bg-blue-400 transition-colors flex-shrink-0',
+                isResizing ? 'bg-blue-400' : 'bg-slate-200'
+              )}
+              onMouseDown={handleMouseDown}
+            />
+            <div 
+              className="border-l border-slate-200 bg-white flex-shrink-0 overflow-hidden"
+              style={{ width: panelWidth }}
+            >
+              <DebugPanel agentState={agentState} mode={mode} />
+            </div>
+          </>
         )}
       </div>
     </div>
