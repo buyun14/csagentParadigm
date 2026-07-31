@@ -128,6 +128,33 @@ export interface LLMChatRequest {
   exceptionState: ExceptionState;
   collectedSlots: CollectedSlots;
   recentMessages: Array<{ role: string; content: string }>;
+  /** 可选的模型参数覆盖 */
+  modelConfig?: LLMModelConfig;
+}
+
+/**
+ * LLM 模型参数配置（OpenAI 兼容格式）
+ * 参考: https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions
+ * 
+ * 注意：不同模型支持的参数可能不同，未支持的参数会被忽略
+ */
+export interface LLMModelConfig {
+  /** 采样温度，控制随机性 (0-2)。值越高输出越随机，值越低输出越确定。建议: 0.7-0.9 用于创意任务，0.1-0.3 用于结构化输出 */
+  temperature?: number;
+  /** 核采样概率 (0-1)。值越小输出越确定。与 temperature 二选一使用 */
+  top_p?: number;
+  /** 最大生成 token 数。限制输出长度，避免过长响应 */
+  max_tokens?: number;
+  /** 存在惩罚 (-2 到 2)。正值鼓励讨论新话题 */
+  presence_penalty?: number;
+  /** 频率惩罚 (-2 到 2)。正值降低重复用词 */
+  frequency_penalty?: number;
+  /** 停止序列，遇到这些字符串时停止生成 */
+  stop?: string | string[];
+  /** 随机种子，用于复现结果 */
+  seed?: number;
+  /** 是否启用流式输出（当前固定为 true） */
+  stream?: boolean;
 }
 
 // LLM 返回结构

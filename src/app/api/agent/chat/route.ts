@@ -1,11 +1,54 @@
 import { NextRequest } from 'next/server';
 import { LLMClient, Config, HeaderUtils } from 'coze-coding-dev-sdk';
 import { buildSystemPrompt, validateNextState, parseLLMResponse } from '@/lib/agent/prompt-builder';
-import type { MainDialogState, CollectedSlots, LLMChatRequest, LatencyMetrics } from '@/lib/agent/types';
+import type { MainDialogState, CollectedSlots, LLMChatRequest, LatencyMetrics, LLMModelConfig } from '@/lib/agent/types';
 
 // SSE 辅助函数
 function sseEncode(data: Record<string, unknown>): string {
   return `data: ${JSON.stringify(data)}\n\n`;
+}
+
+/**
+ * 解析环境变量中的模型参数
+ * 优先级: 请求参数 > 环境变量 > 默认值
+ */
+function getModelConfig(requestConfig?: LLMModelConfig): LLMModelConfig {
+  const envConfig: LLMModelConfig = {
+    temperature: process.env.LLM_TEMPERATURE ? parseFloat(process.env.LLM_TEMPERATURE) : undefined,
+    top_p: process.env.LLM_TOP_P ? parseFloat(process.env.LLM_TOP_P) : undefined,
+    max_tokens: process.env.LLM_MAX_TOKENS ? parseInt(process.env.LLM_MAX_TOKENS, 10) : undefined,
+    presence_penalty: process.env.LLM_PRESENCE_PENALTY ? parseFloat(process.env.LLM_PRESENCE_PENALTY) : undefined,
+    frequency_penalty: process.env.LLM_FREQUENCY_PENALTY ? parseFloat(process.env.LLM_FREQUENCY_PENALTY) : undefined,
+    seed: process.env.LLM_SEED ? parseInt(process.env.LLM_SEED, 10) : undefined,
+  };
+
+  // 合并配置：请求参数 > 环境变量 > 默认值
+  return {
+    temperature: requestConfig?.temperature ?? envConfig.temperature ?? 0.7,
+    top_p: requestConfig?.top_p ?? envConfig.top_p,
+    max_tokens: requestConfig?.max_tokens ?? envConfig.max_tokens,
+    presence_penalty: requestConfig?.presence_penalty ?? envConfig.presence_penalty,
+    frequency_penalty: requestConfig?.frequency_penalty ?? envConfig.frequency_penalty,
+    stop: requestConfig?.stop,
+    seed: requestConfig?.seed ?? envConfig.seed,
+  };
+}
+
+/**
+ * 过滤掉 undefined 值，构建 LLM 调用参数
+ */
+function buildLLMParams(config: LLMModelConfig): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  
+  if (config.temperature !== undefined) params.temperature = config.temperature;
+  if (config.top_p !== undefined) params.top_p = config.top_p;
+  if (config.max_tokens !== undefined) params.max_tokens = config.max_tokens;
+  if (config.presence_penalty !== undefined) params.presence_penalty = config.presence_penalty;
+  if (config.frequency_penalty !== undefined) params.frequency_penalty = config.frequency_penalty;
+  if (config.stop !== undefined) params.stop = config.stop;
+  if (config.seed !== undefined) params.seed = config.seed;
+  
+  return params;
 }
 
 export async function POST(request: NextRequest) {
@@ -19,7 +62,12 @@ export async function POST(request: NextRequest) {
       currentState,
       collectedSlots,
       recentMessages,
+      modelConfig: requestModelConfig,
     } = body;
+
+    // 合并模型参数配置
+    const modelConfig = getModelConfig(requestModelConfig);
+    const llmParams = buildLLMParams(modelConfig);
 
     // 阶段1: 构建 System Prompt
     const promptBuildStart = Date.now();
@@ -55,7 +103,7 @@ export async function POST(request: NextRequest) {
 
     const response = await client.invoke(messages, {
       model: process.env.LLM_MODEL,
-      temperature: 0.7,
+      ...llmParams,
     });
     latencyMetrics.llmCall = Date.now() - llmCallStart;
     latencyMetrics.generation = latencyMetrics.llmCall;
