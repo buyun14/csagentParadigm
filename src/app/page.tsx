@@ -374,9 +374,9 @@ export default function Home() {
       )}
 
       {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden min-h-0">
         {/* Chat Area */}
-        <div className="flex-1 flex flex-col bg-white min-w-0">
+        <div className="flex-1 flex flex-col bg-white min-w-0 h-full overflow-hidden">
           {/* Chat header */}
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 bg-white">
             <div className="flex items-center gap-2">
@@ -431,7 +431,7 @@ export default function Home() {
               onMouseDown={handleMouseDown}
             />
             <div 
-              className="border-l border-slate-200 bg-white flex-shrink-0 overflow-hidden"
+              className="border-l border-slate-200 bg-white flex-shrink-0 overflow-hidden h-full"
               style={{ width: panelWidth }}
             >
               <DebugPanel agentState={agentState} mode={mode} />

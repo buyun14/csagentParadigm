@@ -21,7 +21,7 @@ export function ChatArea({ messages, isProcessing, streamingMessageId }: ChatAre
   }, [messages, streamingMessageId]);
 
   return (
-    <ScrollArea className="flex-1 px-4 py-3">
+    <ScrollArea className="flex-1 px-4 py-3 h-full overflow-hidden">
       <div className="flex flex-col gap-3">
         {messages.map((msg) => (
           <MessageBubble
