@@ -96,10 +96,26 @@ export interface AgentState {
   isProcessing: boolean;
   /** 当前回复来源：LLM 或规则引擎 */
   responseSource: 'llm' | 'rule' | 'fallback';
-  /** LLM 调用延迟（毫秒） */
-  llmLatency: number | null;
+  /** 详细延迟指标 */
+  latencyMetrics: LatencyMetrics | null;
   /** LLM 原始返回（用于调试） */
   llmRawResponse: string | null;
+}
+
+/** 详细延迟指标（用于性能分析） */
+export interface LatencyMetrics {
+  /** Prompt 构建耗时（ms） */
+  promptBuild: number;
+  /** LLM API 调用耗时（ms） */
+  llmCall: number;
+  /** JSON 解析耗时（ms） */
+  parse: number;
+  /** 首字延迟：从请求开始到第一个字符发送（ms） */
+  firstToken: number;
+  /** 生成延迟：LLM 生成完整文本的耗时（ms），等于 llmCall */
+  generation: number;
+  /** 系统调用总耗时：从请求开始到响应完成（ms） */
+  total: number;
 }
 
 // Agent 模式

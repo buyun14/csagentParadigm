@@ -12,7 +12,7 @@ import {
   buildFinalStateFromStream,
   fallbackToRuleEngine,
 } from '@/lib/agent/engine';
-import type { AgentState, AgentMode, ChatMessage } from '@/lib/agent/types';
+import type { AgentState, AgentMode, ChatMessage, LatencyMetrics } from '@/lib/agent/types';
 import { PanelRightClose, PanelRightOpen, Cpu, Workflow } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -32,7 +32,7 @@ export default function Home() {
       emotion: string;
       next_state: string;
       reasoning: string;
-      llmLatency: number;
+      latencyMetrics: LatencyMetrics;
       rawResponse: string;
     } | null;
     customerMessage: ChatMessage | null;
@@ -90,7 +90,7 @@ export default function Home() {
             setAgentState((prev) => ({
               ...prev,
               responseSource: 'llm',
-              llmLatency: data.llmLatency,
+              latencyMetrics: data.latencyMetrics,
               llmRawResponse: data.rawResponse,
             }));
           },

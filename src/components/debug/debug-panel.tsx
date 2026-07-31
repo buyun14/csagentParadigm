@@ -36,7 +36,7 @@ const stateFlow: MainDialogState[] = [
 ];
 
 export function DebugPanel({ agentState, mode }: DebugPanelProps) {
-  const { currentState, exceptionState, collectedSlots, lastDecision, turnCount, responseSource, llmLatency, llmRawResponse } = agentState;
+  const { currentState, exceptionState, collectedSlots, lastDecision, turnCount, responseSource, latencyMetrics, llmRawResponse } = agentState;
 
   return (
     <ScrollArea className="h-full">
@@ -66,25 +66,38 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
           </div>
         </div>
 
-        {/* LLM Info */}
+        {/* LLM Info & Latency Metrics */}
         {mode === 'llm' && (
-          <div className="flex items-center gap-3 p-2 rounded-md bg-slate-50 border border-slate-100">
-            <div className="flex items-center gap-1.5">
-              <Cpu className="h-3 w-3 text-slate-400" />
-              <span className="text-[10px] text-slate-500">
-                {mode === 'llm' ? 'LLM 模式' : '规则引擎模式'}
-              </span>
-            </div>
-            {llmLatency !== null && (
-              <div className="flex items-center gap-1">
-                <Timer className="h-3 w-3 text-slate-400" />
-                <span className="text-[10px] font-mono text-slate-600">{llmLatency}ms</span>
+          <div className="space-y-2">
+            <div className="flex items-center gap-3 p-2 rounded-md bg-slate-50 border border-slate-100">
+              <div className="flex items-center gap-1.5">
+                <Cpu className="h-3 w-3 text-slate-400" />
+                <span className="text-[10px] text-slate-500">
+                  {mode === 'llm' ? 'LLM 模式' : '规则引擎模式'}
+                </span>
               </div>
-            )}
-            {responseSource === 'fallback' && (
-              <Badge variant="outline" className="text-[9px] h-4 px-1 border-red-200 text-red-500">
-                降级
-              </Badge>
+              {responseSource === 'fallback' && (
+                <Badge variant="outline" className="text-[9px] h-4 px-1 border-red-200 text-red-500">
+                  降级
+                </Badge>
+              )}
+            </div>
+            {/* Detailed Latency Metrics */}
+            {latencyMetrics && (
+              <div className="p-2 rounded-md bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Timer className="h-3 w-3 text-blue-500" />
+                  <span className="text-[10px] font-semibold text-blue-700">性能指标</span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                  <LatencyItem label="首字延迟" value={latencyMetrics.firstToken} color="emerald" />
+                  <LatencyItem label="系统总耗时" value={latencyMetrics.total} color="blue" />
+                  <LatencyItem label="Prompt构建" value={latencyMetrics.promptBuild} color="slate" />
+                  <LatencyItem label="LLM调用" value={latencyMetrics.llmCall} color="violet" />
+                  <LatencyItem label="JSON解析" value={latencyMetrics.parse} color="slate" />
+                  <LatencyItem label="生成耗时" value={latencyMetrics.generation} color="violet" />
+                </div>
+              </div>
             )}
           </div>
         )}
@@ -237,8 +250,8 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
           <StatCard label="对话轮次" value={turnCount.toString()} />
           <StatCard label="消息总数" value={agentState.messages.length.toString()} />
           <StatCard
-            label="LLM 延迟"
-            value={llmLatency !== null ? `${llmLatency}ms` : '-'}
+            label="首字延迟"
+            value={latencyMetrics ? `${latencyMetrics.firstToken}ms` : '-'}
           />
         </div>
       </div>
@@ -371,3 +384,23 @@ const entityLabels: Record<string, string> = {
   vehicleType: '车身类型',
   powerType: '动力类型',
 };
+
+// 延迟指标项组件
+function LatencyItem({ label, value, color }: { label: string; value: number; color: string }) {
+  const colorClasses: Record<string, { text: string; bg: string }> = {
+    emerald: { text: 'text-emerald-700', bg: 'bg-emerald-100' },
+    blue: { text: 'text-blue-700', bg: 'bg-blue-100' },
+    violet: { text: 'text-violet-700', bg: 'bg-violet-100' },
+    slate: { text: 'text-slate-600', bg: 'bg-slate-100' },
+  };
+  const cls = colorClasses[color] || colorClasses.slate;
+  
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-[10px] text-slate-500">{label}</span>
+      <span className={cn('text-[11px] font-mono font-semibold px-1.5 py-0.5 rounded', cls.text, cls.bg)}>
+        {value}ms
+      </span>
+    </div>
+  );
+}

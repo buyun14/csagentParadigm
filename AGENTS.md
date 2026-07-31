@@ -100,13 +100,19 @@
 ### 后端 API (`src/app/api/agent/chat/route.ts`)
 - 使用 `coze-coding-dev-sdk` 调用 LLM
 - 环境变量：`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`
-- **SSE 流式输出**：先发送 `metadata` 事件（intent/entities/next_state/llmLatency），再逐块发送 `chunk` 事件（打字机效果），最后发送 `done` 事件
+- **SSE 流式输出**：先发送 `metadata` 事件（intent/entities/next_state/latencyMetrics），再逐块发送 `chunk` 事件（打字机效果），最后发送 `done` 事件
 - LLM 不可用时返回 SSE error 事件，前端触发降级
 
 ### 流式架构
 - **后端**：调用 LLM → 解析 JSON → 通过 SSE 流式发送回复文本（每块2字符，间隔25ms）
 - **前端**：`fetch` + `ReadableStream` 读取 SSE → 实时更新消息气泡内容（打字机效果）
-- **延迟追踪**：每条 agent 消息显示 `latencyMs`（从客户发送到收到完整回复的总耗时）
+- **详细延迟指标**（`LatencyMetrics`）：
+  - `promptBuild`: Prompt 构建耗时
+  - `llmCall`: LLM API 调用耗时
+  - `parse`: JSON 解析耗时
+  - `firstToken`: 首字延迟（从请求开始到第一个字符发送）
+  - `generation`: 生成延迟（LLM 生成完整文本的耗时）
+  - `total`: 系统调用总耗时（从请求开始到响应完成）
 
 ### 降级策略
 - LLM 调用超时（15秒）或失败 → 自动 fallback 到规则引擎

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { LLMClient, Config, HeaderUtils } from 'coze-coding-dev-sdk';
 import { buildSystemPrompt, validateNextState, parseLLMResponse } from '@/lib/agent/prompt-builder';
-import type { MainDialogState, CollectedSlots, LLMChatRequest } from '@/lib/agent/types';
+import type { MainDialogState, CollectedSlots, LLMChatRequest, LatencyMetrics } from '@/lib/agent/types';
 
 // SSE 辅助函数
 function sseEncode(data: Record<string, unknown>): string {
@@ -9,7 +9,8 @@ function sseEncode(data: Record<string, unknown>): string {
 }
 
 export async function POST(request: NextRequest) {
-  const startTime = Date.now();
+  const requestStartTime = Date.now();
+  const latencyMetrics: Partial<LatencyMetrics> = {};
 
   try {
     const body: LLMChatRequest = await request.json();
@@ -20,7 +21,8 @@ export async function POST(request: NextRequest) {
       recentMessages,
     } = body;
 
-    // 构建 System Prompt
+    // 阶段1: 构建 System Prompt
+    const promptBuildStart = Date.now();
     const systemPrompt = buildSystemPrompt(
       currentState as MainDialogState,
       collectedSlots as CollectedSlots
@@ -39,8 +41,10 @@ export async function POST(request: NextRequest) {
       });
     }
     messages.push({ role: 'user', content: customerInput });
+    latencyMetrics.promptBuild = Date.now() - promptBuildStart;
 
-    // 调用 LLM
+    // 阶段2: 调用 LLM
+    const llmCallStart = Date.now();
     const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
     const config = new Config({
       apiKey: process.env.LLM_API_KEY,
@@ -53,14 +57,19 @@ export async function POST(request: NextRequest) {
       model: process.env.LLM_MODEL,
       temperature: 0.7,
     });
+    latencyMetrics.llmCall = Date.now() - llmCallStart;
+    latencyMetrics.generation = latencyMetrics.llmCall;
 
-    const llmLatency = Date.now() - startTime;
-
-    // 解析 LLM 返回
+    // 阶段3: 解析 LLM 返回
+    const parseStart = Date.now();
     const parsed = parseLLMResponse(response.content);
+    latencyMetrics.parse = Date.now() - parseStart;
 
     if (!parsed.success || !parsed.data) {
       // 返回错误 SSE 事件
+      latencyMetrics.total = Date.now() - requestStartTime;
+      latencyMetrics.firstToken = latencyMetrics.total;
+      
       const encoder = new TextEncoder();
       const stream = new ReadableStream({
         start(controller) {
@@ -69,7 +78,7 @@ export async function POST(request: NextRequest) {
             error: 'LLM 返回格式异常',
             detail: parsed.error,
             raw: response.content,
-            latency: llmLatency,
+            latencyMetrics,
           })));
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();
@@ -93,10 +102,15 @@ export async function POST(request: NextRequest) {
     // 构建 SSE 流式响应
     const responseText = parsed.data.response;
     const encoder = new TextEncoder();
+    let firstTokenSent = false;
 
     const stream = new ReadableStream({
       start(controller) {
         // 1. 先发送元数据事件
+        const firstTokenTime = Date.now() - requestStartTime;
+        latencyMetrics.firstToken = firstTokenTime;
+        firstTokenSent = true;
+
         controller.enqueue(encoder.encode(sseEncode({
           type: 'metadata',
           intent: parsed.data!.intent,
@@ -104,7 +118,13 @@ export async function POST(request: NextRequest) {
           emotion: parsed.data!.emotion,
           next_state: validatedNextState,
           reasoning: parsed.data!.reasoning,
-          llmLatency,
+          latencyMetrics: {
+            promptBuild: latencyMetrics.promptBuild,
+            llmCall: latencyMetrics.llmCall,
+            parse: latencyMetrics.parse,
+            firstToken: firstTokenTime,
+            generation: latencyMetrics.generation,
+          },
           rawResponse: JSON.stringify(parsed.data, null, 2),
         })));
 
@@ -116,9 +136,12 @@ export async function POST(request: NextRequest) {
         function sendNextChunk() {
           if (index >= responseText.length) {
             // 发送完成事件
+            latencyMetrics.total = Date.now() - requestStartTime;
             controller.enqueue(encoder.encode(sseEncode({
               type: 'done',
-              totalLatency: Date.now() - startTime,
+              latencyMetrics: {
+                total: latencyMetrics.total,
+              },
             })));
             controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             controller.close();
@@ -132,11 +155,11 @@ export async function POST(request: NextRequest) {
             content: chunk,
           })));
           index = end;
+
           setTimeout(sendNextChunk, delay);
         }
 
-        // 开始发送文本块
-        setTimeout(sendNextChunk, 50);
+        sendNextChunk();
       },
     });
 
@@ -147,25 +170,26 @@ export async function POST(request: NextRequest) {
         'Connection': 'keep-alive',
       },
     });
-  } catch (error) {
-    const latency = Date.now() - startTime;
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    // 返回错误 SSE 事件
+  } catch (error) {
+    latencyMetrics.total = Date.now() - requestStartTime;
+    if (!latencyMetrics.firstToken) {
+      latencyMetrics.firstToken = latencyMetrics.total;
+    }
+    
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(encoder.encode(sseEncode({
           type: 'error',
           error: 'LLM 调用失败',
-          detail: errorMessage,
-          latency,
+          detail: error instanceof Error ? error.message : String(error),
+          latencyMetrics,
         })));
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
       },
     });
-
     return new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',

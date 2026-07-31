@@ -6,6 +6,7 @@ import type {
   MainDialogState,
   ExceptionState,
   AgentMode,
+  LatencyMetrics,
 } from './types';
 import { recognizeIntent } from './intent';
 import { generateResponse } from './state-machine';
@@ -36,7 +37,7 @@ export interface StreamCallbacks {
     emotion: string;
     next_state: string;
     reasoning: string;
-    llmLatency: number;
+    latencyMetrics: LatencyMetrics;
     rawResponse: string;
   }) => void;
   /** 收到文本块 */
@@ -67,7 +68,7 @@ export function createInitialState(): AgentState {
     turnCount: 0,
     isProcessing: false,
     responseSource: 'rule',
-    llmLatency: null,
+    latencyMetrics: null,
     llmRawResponse: null,
   };
 }
@@ -138,7 +139,7 @@ async function streamLLMAgent(
                   emotion: event.emotion as string,
                   next_state: event.next_state as string,
                   reasoning: event.reasoning as string,
-                  llmLatency: event.llmLatency as number,
+                  latencyMetrics: event.latencyMetrics as LatencyMetrics,
                   rawResponse: event.rawResponse as string,
                 });
                 break;
@@ -146,7 +147,7 @@ async function streamLLMAgent(
                 callbacks.onChunk?.(event.content as string);
                 break;
               case 'done':
-                callbacks.onComplete?.(event.totalLatency as number);
+                callbacks.onComplete?.((event.latencyMetrics as LatencyMetrics | undefined)?.total ?? 0);
                 break;
               case 'error':
                 callbacks.onError?.(event.error as string);
@@ -341,7 +342,14 @@ function processWithRule(
     turnCount: currentState.turnCount + 1,
     isProcessing: false,
     responseSource: 'rule',
-    llmLatency: null,
+    latencyMetrics: {
+      promptBuild: 0,
+      llmCall: 0,
+      parse: 0,
+      firstToken: ruleLatency,
+      generation: ruleLatency,
+      total: ruleLatency,
+    },
     llmRawResponse: null,
   };
 
@@ -384,7 +392,7 @@ export function buildFinalStateFromStream(
     emotion: string;
     next_state: string;
     reasoning: string;
-    llmLatency: number;
+    latencyMetrics: LatencyMetrics;
     rawResponse: string;
   },
   totalLatency: number
@@ -410,12 +418,18 @@ export function buildFinalStateFromStream(
     output: agentMessageContent,
   };
 
+  // 合并最终的 total latency
+  const finalLatencyMetrics: LatencyMetrics = {
+    ...metadata.latencyMetrics,
+    total: totalLatency || metadata.latencyMetrics.total,
+  };
+
   const agentMessage: ChatMessage = {
     id: `msg-a-${customerMessage.timestamp}`,
     role: 'agent',
     content: agentMessageContent,
     timestamp: Date.now(),
-    latencyMs: totalLatency,
+    latencyMs: finalLatencyMetrics.total,
   };
 
   return {
@@ -427,7 +441,7 @@ export function buildFinalStateFromStream(
     turnCount: currentState.turnCount + 1,
     isProcessing: false,
     responseSource: 'llm',
-    llmLatency: metadata.llmLatency,
+    latencyMetrics: finalLatencyMetrics,
     llmRawResponse: metadata.rawResponse,
   };
 }
@@ -445,7 +459,7 @@ export function fallbackToRuleEngine(
     newState: {
       ...ruleResult.newState,
       responseSource: 'fallback',
-      llmLatency: null,
+      latencyMetrics: null,
       llmRawResponse: null,
     },
   };
