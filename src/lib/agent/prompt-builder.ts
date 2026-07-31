@@ -30,29 +30,10 @@ export function buildSystemPrompt(
   currentState: MainDialogState,
   slots: CollectedSlots
 ): string {
-  // 调试输出：打印发送给大模型的实际变量值
-  if (process.env.NODE_ENV === 'development') {
-    console.log('========== [Prompt Builder Debug] ==========');
-    console.log('[当前状态]', currentState, '-', stateGoals[currentState]);
-    console.log('[已收集槽位]', JSON.stringify(slots, null, 2));
-    console.log('[品牌]', slots.brand || '未收集');
-    console.log('[车系]', slots.series || '未收集');
-    console.log('[城市]', slots.city || '未收集');
-    console.log('[购车时间]', slots.timing || '未收集');
-    console.log('[客户姓氏]', slots.surname || '未收集');
-    console.log('[手机尾号]', slots.phoneTail || '未收集');
-    console.log('=============================================');
-  }
-
   // 构建知识库数据
   const kbSection = buildKnowledgeSection(slots);
 
-  // 调试输出：打印知识库注入部分
-  if (process.env.NODE_ENV === 'development') {
-    console.log('[知识库注入]', kbSection);
-  }
-
-  const systemPrompt = `【角色设定】
+  return `【角色设定】
 你是互联网汽车营销中心的电话客服坐席。你的工作是通过电话外呼，了解客户的购车意向，收集品牌、车系、城市、购车时间、联系方式等信息，最终将客户信息授权给当地四S店提供精准报价。
 
 说话风格要求：
@@ -93,14 +74,6 @@ ${kbSection}
   "response": "你的回复内容（口语化、自然、简短）",
   "reasoning": "简要说明你的决策理由（一句话）"
 }`;
-
-  // 调试输出：打印完整的 System Prompt（仅打印前500字符避免日志过长）
-  if (process.env.NODE_ENV === 'development') {
-    console.log('[完整 System Prompt] (前500字符):', systemPrompt.substring(0, 500) + '...');
-    console.log('[System Prompt 总长度]:', systemPrompt.length, '字符');
-  }
-
-  return systemPrompt;
 }
 
 /**
