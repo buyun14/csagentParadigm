@@ -95,11 +95,21 @@ export interface AgentState {
   turnCount: number;
   isProcessing: boolean;
   /** 当前回复来源：LLM 或规则引擎 */
-  responseSource: 'llm' | 'rule' | 'fallback';
+  responseSource: 'llm' | 'rule' | 'fallback' | 'cache';
   /** 详细延迟指标 */
   latencyMetrics: LatencyMetrics | null;
   /** LLM 原始返回（用于调试） */
   llmRawResponse: string | null;
+  /** 提示词日志历史 */
+  promptLogs: PromptLogEntry[];
+  /** 慢通道状态 */
+  slowChannelStatus: 'idle' | 'pending' | 'done' | 'timeout';
+  /** 慢通道结果 */
+  slowChannelResult: {
+    emotion: string;
+    entities: Record<string, string>;
+    reasoning: string;
+  } | null;
 }
 
 /** 详细延迟指标（用于性能分析） */
@@ -119,7 +129,30 @@ export interface LatencyMetrics {
 }
 
 // Agent 模式
-export type AgentMode = 'llm' | 'rule';
+export type AgentMode = 'llm' | 'rule' | 'dual';
+
+/** 提示词日志条目 */
+export interface PromptLogEntry {
+  turn_id: string;
+  timestamp: number;
+  mode: 'fast' | 'slow' | 'rule_engine' | 'cache';
+  status: 'success' | 'timeout' | 'fallback' | 'cache_hit';
+  prompt: {
+    system_prompt: string;
+    user_message: string;
+    metadata: {
+      prompt_type: 'slim' | 'full' | 'slow';
+      token_estimate: number;
+      model: string;
+      temperature: number;
+    };
+  };
+  raw_output: string;
+  latency: {
+    first_token_ms: number;
+    total_ms: number;
+  };
+}
 
 // LLM 请求参数
 export interface LLMChatRequest {

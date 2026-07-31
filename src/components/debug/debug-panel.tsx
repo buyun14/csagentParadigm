@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import type { AgentState, MainDialogState, ExceptionState, CollectedSlots, AgentMode } from '@/lib/agent/types';
+import type { AgentState, MainDialogState, ExceptionState, CollectedSlots, AgentMode, PromptLogEntry } from '@/lib/agent/types';
 import { stateLabels, exceptionLabels } from '@/lib/agent/engine';
 import {
   Brain,
@@ -17,6 +17,9 @@ import {
   Code,
   ChevronDown,
   ChevronRight,
+  FileText,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -57,6 +60,8 @@ const emotionLabels: Record<string, string> = {
   positive: '积极',
   negative: '消极',
   angry: '愤怒',
+  interested: '感兴趣',
+  annoyed: '不耐烦',
 };
 
 // 实体标签
@@ -128,7 +133,21 @@ function Section({
 }
 
 export function DebugPanel({ agentState, mode }: DebugPanelProps) {
-  const { currentState, exceptionState, collectedSlots, lastDecision, turnCount, responseSource, latencyMetrics, llmRawResponse } = agentState;
+  const { 
+    currentState, 
+    exceptionState, 
+    collectedSlots, 
+    lastDecision, 
+    turnCount, 
+    responseSource, 
+    latencyMetrics, 
+    llmRawResponse,
+    promptLogs,
+    slowChannelStatus,
+    slowChannelResult,
+  } = agentState;
+
+  const [selectedLogIndex, setSelectedLogIndex] = useState<number | null>(null);
 
   return (
     <ScrollArea className="h-full">
@@ -145,25 +164,40 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
               'w-2 h-2 rounded-full',
               responseSource === 'llm' && 'bg-emerald-500',
               responseSource === 'rule' && 'bg-amber-500',
-              responseSource === 'fallback' && 'bg-red-500'
+              responseSource === 'fallback' && 'bg-red-500',
+              responseSource === 'cache' && 'bg-purple-500'
             )} />
             <span className={cn(
               'text-[10px] font-medium',
               responseSource === 'llm' && 'text-emerald-600',
               responseSource === 'rule' && 'text-amber-600',
-              responseSource === 'fallback' && 'text-red-600'
+              responseSource === 'fallback' && 'text-red-600',
+              responseSource === 'cache' && 'text-purple-600'
             )}>
-              {responseSource === 'llm' ? 'LLM' : responseSource === 'rule' ? '规则' : '降级'}
+              {responseSource === 'llm' ? 'LLM' : responseSource === 'rule' ? '规则' : responseSource === 'cache' ? '缓存' : '降级'}
             </span>
           </div>
         </div>
 
         {/* Performance Metrics - Always visible, compact */}
-        {mode === 'llm' && latencyMetrics && (
+        {(mode === 'llm' || mode === 'dual') && latencyMetrics && (
           <div className="p-2 rounded-md bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100">
             <div className="flex items-center gap-1.5 mb-1.5">
               <Timer className="h-3 w-3 text-blue-500" />
               <span className="text-[10px] font-semibold text-blue-700">性能指标</span>
+              {mode === 'dual' && slowChannelStatus && (
+                <Badge 
+                  variant="outline" 
+                  className={cn(
+                    'text-[8px] h-3 ml-auto',
+                    slowChannelStatus === 'pending' && 'border-blue-200 text-blue-600',
+                    slowChannelStatus === 'done' && 'border-emerald-200 text-emerald-600',
+                    slowChannelStatus === 'timeout' && 'border-red-200 text-red-600'
+                  )}
+                >
+                  慢通道: {slowChannelStatus === 'pending' ? '分析中' : slowChannelStatus === 'done' ? '完成' : '超时'}
+                </Badge>
+              )}
             </div>
             <div className="grid grid-cols-3 gap-x-2 gap-y-1">
               <LatencyItem label="首字" value={latencyMetrics.firstToken} color="emerald" />
@@ -174,6 +208,35 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
               <LatencyItem label="生成" value={latencyMetrics.generation} color="violet" />
             </div>
           </div>
+        )}
+
+        {/* Slow Channel Result */}
+        {mode === 'dual' && slowChannelStatus === 'done' && slowChannelResult && (
+          <Section 
+            icon={<Eye className="h-3.5 w-3.5 text-violet-500" />} 
+            title="慢通道分析"
+            defaultOpen={true}
+          >
+            <div className="space-y-1.5">
+              <InfoRow label="情绪" value={emotionLabels[slowChannelResult.emotion] || slowChannelResult.emotion} />
+              <div className="text-[10px] text-slate-600 bg-violet-50 rounded p-1.5 leading-relaxed border border-violet-100">
+                <span className="text-[9px] text-violet-400 uppercase tracking-wider">推理</span>
+                <div className="mt-0.5">{slowChannelResult.reasoning}</div>
+              </div>
+              {Object.keys(slowChannelResult.entities).length > 0 && (
+                <div>
+                  <span className="text-[9px] text-slate-400 uppercase tracking-wider">实体</span>
+                  <div className="flex flex-wrap gap-0.5 mt-0.5">
+                    {Object.entries(slowChannelResult.entities).map(([key, val]) => (
+                      <Badge key={key} variant="secondary" className="text-[9px] h-3.5 px-1 bg-violet-100 text-violet-600">
+                        {key}: {val}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Section>
         )}
 
         {/* State Machine */}
@@ -312,7 +375,7 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
             </Section>
 
             {/* LLM Raw Response - Collapsed by default */}
-            {llmRawResponse && mode === 'llm' && (
+            {llmRawResponse && (mode === 'llm' || mode === 'dual') && (
               <Section 
                 icon={<Code className="h-3.5 w-3.5" />} 
                 title="LLM 原始返回"
@@ -326,6 +389,29 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
           </>
         )}
 
+        {/* Prompt Logs Section */}
+        {promptLogs.length > 0 && (
+          <>
+            <Separator />
+            <Section 
+              icon={<FileText className="h-3.5 w-3.5" />} 
+              title="提示词日志"
+              defaultOpen={false}
+              badge={
+                <Badge variant="secondary" className="text-[9px] h-3.5 bg-slate-100">
+                  {promptLogs.length}
+                </Badge>
+              }
+            >
+              <PromptLogList 
+                logs={promptLogs} 
+                selectedIndex={selectedLogIndex}
+                onSelect={setSelectedLogIndex}
+              />
+            </Section>
+          </>
+        )}
+
         {/* Stats */}
         <Separator />
         <div className="grid grid-cols-3 gap-1.5">
@@ -335,6 +421,131 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
         </div>
       </div>
     </ScrollArea>
+  );
+}
+
+function PromptLogList({ 
+  logs, 
+  selectedIndex,
+  onSelect 
+}: { 
+  logs: PromptLogEntry[];
+  selectedIndex: number | null;
+  onSelect: (index: number | null) => void;
+}) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopy = async (text: string, id: string) => {
+    await navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  return (
+    <div className="space-y-2">
+      {/* Log list */}
+      <div className="space-y-1 max-h-[200px] overflow-y-auto">
+        {logs.map((log, index) => (
+          <button
+            key={log.turn_id}
+            onClick={() => onSelect(selectedIndex === index ? null : index)}
+            className={cn(
+              'w-full text-left px-2 py-1.5 rounded text-[10px] transition-colors',
+              selectedIndex === index 
+                ? 'bg-blue-50 border border-blue-200' 
+                : 'bg-slate-50 border border-slate-100 hover:bg-slate-100'
+            )}
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-slate-500">#{index + 1}</span>
+              <div className="flex items-center gap-1">
+                <Badge 
+                  variant="outline" 
+                  className={cn(
+                    'text-[8px] h-3',
+                    log.mode === 'fast' && 'border-blue-200 text-blue-600',
+                    log.mode === 'slow' && 'border-violet-200 text-violet-600',
+                    log.mode === 'rule_engine' && 'border-amber-200 text-amber-600',
+                    log.mode === 'cache' && 'border-purple-200 text-purple-600'
+                  )}
+                >
+                  {log.mode === 'fast' ? '快' : log.mode === 'slow' ? '慢' : log.mode === 'cache' ? '缓存' : '规则'}
+                </Badge>
+                <span className="text-[9px] text-slate-400">{log.latency.total_ms}ms</span>
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* Selected log detail */}
+      {selectedIndex !== null && logs[selectedIndex] && (
+        <div className="space-y-2 border-t border-slate-200 pt-2">
+          {(() => {
+            const log = logs[selectedIndex];
+            return (
+              <>
+                {/* System Prompt */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] text-slate-400 uppercase tracking-wider">System Prompt</span>
+                    <button
+                      onClick={() => handleCopy(log.prompt.system_prompt, `sys-${selectedIndex}`)}
+                      className="text-slate-400 hover:text-slate-600"
+                    >
+                      {copiedId === `sys-${selectedIndex}` ? (
+                        <Check className="h-3 w-3 text-emerald-500" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </button>
+                  </div>
+                  <pre className="text-[9px] text-slate-600 bg-slate-50 rounded p-2 overflow-x-auto border border-slate-100 leading-relaxed max-h-[150px] overflow-y-auto whitespace-pre-wrap">
+                    {log.prompt.system_prompt || '(无)'}
+                  </pre>
+                </div>
+
+                {/* User Message */}
+                <div className="space-y-1">
+                  <span className="text-[9px] text-slate-400 uppercase tracking-wider">User Message</span>
+                  <pre className="text-[9px] text-slate-600 bg-blue-50 rounded p-2 overflow-x-auto border border-blue-100 leading-relaxed">
+                    {log.prompt.user_message}
+                  </pre>
+                </div>
+
+                {/* Raw Output */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[9px] text-slate-400 uppercase tracking-wider">Raw Output</span>
+                    <button
+                      onClick={() => handleCopy(log.raw_output, `out-${selectedIndex}`)}
+                      className="text-slate-400 hover:text-slate-600"
+                    >
+                      {copiedId === `out-${selectedIndex}` ? (
+                        <Check className="h-3 w-3 text-emerald-500" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </button>
+                  </div>
+                  <pre className="text-[9px] text-slate-600 bg-emerald-50 rounded p-2 overflow-x-auto border border-emerald-100 leading-relaxed max-h-[150px] overflow-y-auto whitespace-pre-wrap">
+                    {log.raw_output || '(无)'}
+                  </pre>
+                </div>
+
+                {/* Metadata */}
+                <div className="grid grid-cols-2 gap-1 text-[9px]">
+                  <InfoRow label="Model" value={log.prompt.metadata.model} />
+                  <InfoRow label="Temp" value={log.prompt.metadata.temperature.toString()} />
+                  <InfoRow label="Tokens" value={log.prompt.metadata.token_estimate.toString()} />
+                  <InfoRow label="首字" value={`${log.latency.first_token_ms}ms`} />
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      )}
+    </div>
   );
 }
 

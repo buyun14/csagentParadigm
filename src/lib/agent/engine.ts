@@ -70,6 +70,9 @@ export function createInitialState(): AgentState {
     responseSource: 'rule',
     latencyMetrics: null,
     llmRawResponse: null,
+    promptLogs: [],
+    slowChannelStatus: 'idle',
+    slowChannelResult: null,
   };
 }
 
@@ -351,6 +354,9 @@ function processWithRule(
       total: ruleLatency,
     },
     llmRawResponse: null,
+    promptLogs: currentState.promptLogs || [],
+    slowChannelStatus: 'idle',
+    slowChannelResult: null,
   };
 
   return { newState, customerMessage, agentMessage };
@@ -443,6 +449,9 @@ export function buildFinalStateFromStream(
     responseSource: 'llm',
     latencyMetrics: finalLatencyMetrics,
     llmRawResponse: metadata.rawResponse,
+    promptLogs: currentState.promptLogs || [],
+    slowChannelStatus: 'idle',
+    slowChannelResult: null,
   };
 }
 
@@ -461,6 +470,9 @@ export function fallbackToRuleEngine(
       responseSource: 'fallback',
       latencyMetrics: null,
       llmRawResponse: null,
+      promptLogs: currentState.promptLogs || [],
+      slowChannelStatus: 'idle',
+      slowChannelResult: null,
     },
   };
 }
