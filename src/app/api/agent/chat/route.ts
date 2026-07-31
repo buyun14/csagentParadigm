@@ -1,7 +1,12 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { LLMClient, Config, HeaderUtils } from 'coze-coding-dev-sdk';
 import { buildSystemPrompt, validateNextState, parseLLMResponse } from '@/lib/agent/prompt-builder';
 import type { MainDialogState, CollectedSlots, LLMChatRequest } from '@/lib/agent/types';
+
+// SSE 辅助函数
+function sseEncode(data: Record<string, unknown>): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}
 
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
@@ -21,12 +26,11 @@ export async function POST(request: NextRequest) {
       collectedSlots as CollectedSlots
     );
 
-    // 构建消息列表（最近6轮 = 12条消息）
+    // 构建消息列表
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       { role: 'system', content: systemPrompt },
     ];
 
-    // 添加历史对话（最近12条）
     const historySlice = recentMessages.slice(-12);
     for (const msg of historySlice) {
       messages.push({
@@ -34,11 +38,9 @@ export async function POST(request: NextRequest) {
         content: msg.content,
       });
     }
-
-    // 添加当前客户输入
     messages.push({ role: 'user', content: customerInput });
 
-    // 调用 LLM（从 .env 的 LLM_* 变量显式传入 SDK 配置）
+    // 调用 LLM
     const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
     const config = new Config({
       apiKey: process.env.LLM_API_KEY,
@@ -52,17 +54,33 @@ export async function POST(request: NextRequest) {
       temperature: 0.7,
     });
 
-    const latency = Date.now() - startTime;
+    const llmLatency = Date.now() - startTime;
 
     // 解析 LLM 返回
     const parsed = parseLLMResponse(response.content);
 
     if (!parsed.success || !parsed.data) {
-      return NextResponse.json({
-        error: 'LLM 返回格式异常',
-        detail: parsed.error,
-        raw: response.content,
-        latency,
+      // 返回错误 SSE 事件
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseEncode({
+            type: 'error',
+            error: 'LLM 返回格式异常',
+            detail: parsed.error,
+            raw: response.content,
+            latency: llmLatency,
+          })));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        },
       });
     }
 
@@ -72,20 +90,88 @@ export async function POST(request: NextRequest) {
       parsed.data.next_state
     );
 
-    return NextResponse.json({
-      ...parsed.data,
-      next_state: validatedNextState,
-      latency,
+    // 构建 SSE 流式响应
+    const responseText = parsed.data.response;
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+      start(controller) {
+        // 1. 先发送元数据事件
+        controller.enqueue(encoder.encode(sseEncode({
+          type: 'metadata',
+          intent: parsed.data!.intent,
+          entities: parsed.data!.entities,
+          emotion: parsed.data!.emotion,
+          next_state: validatedNextState,
+          reasoning: parsed.data!.reasoning,
+          llmLatency,
+          rawResponse: JSON.stringify(parsed.data, null, 2),
+        })));
+
+        // 2. 流式发送回复文本（模拟打字效果，每块 1-3 个字符）
+        const chunkSize = 2; // 每次发送2个字符
+        const delay = 25; // 每块间隔25ms
+
+        let index = 0;
+        function sendNextChunk() {
+          if (index >= responseText.length) {
+            // 发送完成事件
+            controller.enqueue(encoder.encode(sseEncode({
+              type: 'done',
+              totalLatency: Date.now() - startTime,
+            })));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+            return;
+          }
+
+          const end = Math.min(index + chunkSize, responseText.length);
+          const chunk = responseText.slice(index, end);
+          controller.enqueue(encoder.encode(sseEncode({
+            type: 'chunk',
+            content: chunk,
+          })));
+          index = end;
+          setTimeout(sendNextChunk, delay);
+        }
+
+        // 开始发送文本块
+        setTimeout(sendNextChunk, 50);
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
     });
   } catch (error) {
     const latency = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-    // 返回 200 + error 字段，让前端触发降级逻辑
-    return NextResponse.json({
-      error: 'LLM 调用失败',
-      detail: errorMessage,
-      latency,
+    // 返回错误 SSE 事件
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseEncode({
+          type: 'error',
+          error: 'LLM 调用失败',
+          detail: errorMessage,
+          latency,
+        })));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
     });
   }
 }

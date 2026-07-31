@@ -20,7 +20,7 @@
 ├── src/
 │   ├── app/                # 页面路由与布局
 │   │   ├── page.tsx        # 主页 - 汽车营销客服Agent聊天界面
-│   │   └── api/agent/chat/route.ts # LLM Agent API 路由
+│   │   └── api/agent/chat/route.ts # LLM Agent API 路由（SSE 流式输出）
 │   ├── components/
 │   │   ├── ui/             # Shadcn UI 组件库
 │   │   ├── chat/           # 聊天组件
@@ -100,10 +100,16 @@
 ### 后端 API (`src/app/api/agent/chat/route.ts`)
 - 使用 `coze-coding-dev-sdk` 调用 LLM
 - 环境变量：`LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`
-- LLM 不可用时返回 200 + error 字段，前端触发降级
+- **SSE 流式输出**：先发送 `metadata` 事件（intent/entities/next_state/llmLatency），再逐块发送 `chunk` 事件（打字机效果），最后发送 `done` 事件
+- LLM 不可用时返回 SSE error 事件，前端触发降级
+
+### 流式架构
+- **后端**：调用 LLM → 解析 JSON → 通过 SSE 流式发送回复文本（每块2字符，间隔25ms）
+- **前端**：`fetch` + `ReadableStream` 读取 SSE → 实时更新消息气泡内容（打字机效果）
+- **延迟追踪**：每条 agent 消息显示 `latencyMs`（从客户发送到收到完整回复的总耗时）
 
 ### 降级策略
-- LLM 调用超时（10秒）或失败 → 自动 fallback 到规则引擎
+- LLM 调用超时（15秒）或失败 → 自动 fallback 到规则引擎
 - LLM 返回格式异常 → 尝试解析，解析失败则用规则引擎
 - 调试面板标记当前回复来源（LLM / 规则引擎降级）
 

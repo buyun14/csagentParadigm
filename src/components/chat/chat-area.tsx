@@ -4,27 +4,33 @@ import { cn } from '@/lib/utils';
 import type { ChatMessage } from '@/lib/agent/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useEffect, useRef } from 'react';
-import { Bot, User } from 'lucide-react';
+import { Bot, User, Clock } from 'lucide-react';
 
 interface ChatAreaProps {
   messages: ChatMessage[];
   isProcessing: boolean;
+  /** 当前正在流式接收的消息 ID */
+  streamingMessageId?: string | null;
 }
 
-export function ChatArea({ messages, isProcessing }: ChatAreaProps) {
+export function ChatArea({ messages, isProcessing, streamingMessageId }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, streamingMessageId]);
 
   return (
     <ScrollArea className="flex-1 px-4 py-3">
       <div className="flex flex-col gap-3">
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <MessageBubble
+            key={msg.id}
+            message={msg}
+            isStreaming={msg.id === streamingMessageId}
+          />
         ))}
-        {isProcessing && (
+        {isProcessing && !streamingMessageId && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground animate-pulse">
             <Bot className="h-4 w-4" />
             <span>正在思考...</span>
@@ -36,7 +42,7 @@ export function ChatArea({ messages, isProcessing }: ChatAreaProps) {
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({ message, isStreaming }: { message: ChatMessage; isStreaming?: boolean }) {
   const isAgent = message.role === 'agent';
 
   return (
@@ -60,12 +66,21 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 
       {/* Message content */}
       <div className={cn('flex flex-col max-w-[75%]', isAgent ? 'items-start' : 'items-end')}>
-        <span className={cn(
-          'text-xs mb-1 px-1',
-          isAgent ? 'text-slate-400' : 'text-blue-400'
-        )}>
-          {isAgent ? '智能坐席' : '客户'}
-        </span>
+        <div className={cn('flex items-center gap-1.5 mb-1 px-1', isAgent ? '' : 'flex-row-reverse')}>
+          <span className={cn(
+            'text-xs',
+            isAgent ? 'text-slate-400' : 'text-blue-400'
+          )}>
+            {isAgent ? '智能坐席' : '客户'}
+          </span>
+          {/* 延迟显示 */}
+          {isAgent && message.latencyMs != null && (
+            <span className="flex items-center gap-0.5 text-[10px] text-slate-300 font-mono">
+              <Clock className="h-2.5 w-2.5" />
+              {message.latencyMs}ms
+            </span>
+          )}
+        </div>
         <div
           className={cn(
             'px-3.5 py-2.5 text-sm leading-relaxed rounded-xl',
@@ -75,6 +90,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           )}
         >
           {message.content}
+          {isStreaming && (
+            <span className="inline-block w-0.5 h-3.5 bg-blue-500 ml-0.5 animate-pulse align-middle" />
+          )}
         </div>
       </div>
     </div>

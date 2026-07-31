@@ -6,7 +6,6 @@ import type {
   MainDialogState,
   ExceptionState,
   AgentMode,
-  LLMChatResponse,
 } from './types';
 import { recognizeIntent } from './intent';
 import { generateResponse } from './state-machine';
@@ -27,6 +26,26 @@ const initialSlots: CollectedSlots = {
 
 // Agent 开场白
 const GREETING_MESSAGE = '喂，你好。这边是互联网汽车营销中心的，价格合适的话，您这边考虑过买车吗？给您做一个报价，您参考了解一下哈，您看最近有比较关注哪款车呀？';
+
+/** 流式回调接口 */
+export interface StreamCallbacks {
+  /** 收到元数据 */
+  onMetadata?: (data: {
+    intent: string;
+    entities: Record<string, string>;
+    emotion: string;
+    next_state: string;
+    reasoning: string;
+    llmLatency: number;
+    rawResponse: string;
+  }) => void;
+  /** 收到文本块 */
+  onChunk?: (content: string) => void;
+  /** 流式完成 */
+  onComplete?: (totalLatency: number) => void;
+  /** 发生错误（触发降级） */
+  onError?: (error: string) => void;
+}
 
 /**
  * 创建初始 Agent 状态
@@ -54,23 +73,20 @@ export function createInitialState(): AgentState {
 }
 
 /**
- * 调用 LLM API
+ * 流式调用 LLM API（SSE 消费）
  */
-async function callLLMAgent(
+async function streamLLMAgent(
   customerInput: string,
-  currentState: AgentState
-): Promise<{
-  success: boolean;
-  data?: LLMChatResponse & { latency: number };
-  error?: string;
-}> {
+  currentState: AgentState,
+  callbacks: StreamCallbacks
+): Promise<void> {
   try {
     const recentMessages = currentState.messages
       .slice(-12)
       .map((m) => ({ role: m.role, content: m.content }));
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const response = await fetch('/api/agent/chat', {
       method: 'POST',
@@ -87,17 +103,64 @@ async function callLLMAgent(
 
     clearTimeout(timeoutId);
 
-    const data = await response.json();
-
-    // 检查是否有 error 字段（LLM 调用失败或格式异常）
-    if (data.error) {
-      return { success: false, error: data.error };
+    if (!response.body) {
+      callbacks.onError?.('响应体为空');
+      return;
     }
 
-    return { success: true, data };
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // 解析 SSE 事件
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // 保留未完成的行
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.slice(6).trim();
+          if (dataStr === '[DONE]') continue;
+
+          try {
+            const event = JSON.parse(dataStr) as Record<string, unknown>;
+
+            switch (event.type) {
+              case 'metadata':
+                callbacks.onMetadata?.({
+                  intent: event.intent as string,
+                  entities: event.entities as Record<string, string>,
+                  emotion: event.emotion as string,
+                  next_state: event.next_state as string,
+                  reasoning: event.reasoning as string,
+                  llmLatency: event.llmLatency as number,
+                  rawResponse: event.rawResponse as string,
+                });
+                break;
+              case 'chunk':
+                callbacks.onChunk?.(event.content as string);
+                break;
+              case 'done':
+                callbacks.onComplete?.(event.totalLatency as number);
+                break;
+              case 'error':
+                callbacks.onError?.(event.error as string);
+                return;
+            }
+          } catch {
+            // 忽略解析错误
+          }
+        }
+      }
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    return { success: false, error: message };
+    callbacks.onError?.(message);
   }
 }
 
@@ -145,95 +208,61 @@ function mapEmotionToException(emotion: string, intent: string): ExceptionState 
 }
 
 /**
- * 处理客户输入 - LLM 模式
+ * 状态标签映射（用于调试面板）
  */
-async function processWithLLM(
+export const stateLabels: Record<MainDialogState, string> = {
+  GREETING: '开场问候',
+  BRAND_INQUIRY: '品牌确认',
+  MODEL_INQUIRY: '车型确认',
+  CITY_INQUIRY: '城市确认',
+  TIMING_INQUIRY: '时间确认',
+  CONTACT_COLLECTION: '联系方式',
+  FAREWELL: '结束告别',
+};
+
+export const exceptionLabels: Record<ExceptionState, string> = {
+  NONE: '正常',
+  OFF_TRACK: '偏离话题',
+  ABUSE: '辱骂攻击',
+  OUT_OF_SCOPE: '超范围',
+  UNCLEAR: '输入不清',
+};
+
+/**
+ * 处理客户输入 - LLM 流式模式
+ * 返回客户消息和初始 agent 消息（流式内容通过回调更新）
+ */
+export function processWithLLMStreaming(
   currentState: AgentState,
-  customerInput: string
-): Promise<{
-  newState: AgentState;
+  customerInput: string,
+  callbacks: StreamCallbacks
+): {
   customerMessage: ChatMessage;
-  agentMessage: ChatMessage;
-  rawResponse: string | null;
-  latency: number | null;
-}> {
+  agentMessageId: string;
+  sendTime: number;
+} {
+  const sendTime = Date.now();
   const customerMessage: ChatMessage = {
-    id: `msg-c-${Date.now()}`,
+    id: `msg-c-${sendTime}`,
     role: 'customer',
     content: customerInput,
-    timestamp: Date.now(),
+    timestamp: sendTime,
   };
 
-  const llmResult = await callLLMAgent(customerInput, currentState);
+  const agentMessageId = `msg-a-${sendTime}`;
 
-  // LLM 调用失败 → 降级到规则引擎
-  if (!llmResult.success || !llmResult.data) {
-    const ruleResult = processWithRule(currentState, customerInput);
-    return {
-      ...ruleResult,
-      newState: {
-        ...ruleResult.newState,
-        responseSource: 'fallback',
-        llmLatency: null,
-        llmRawResponse: null,
-      },
-      rawResponse: null,
-      latency: null,
-    };
-  }
-
-  const { data } = llmResult;
-
-  // 更新槽位
-  const updatedSlots = updateSlotsFromEntities(currentState.collectedSlots, data.entities);
-
-  // 构建决策路径
-  const decision: AgentDecision = {
-    perception: {
-      intent: data.intent as AgentDecision['perception']['intent'],
-      entities: data.entities,
-      emotion: mapEmotion(data.emotion),
+  // 异步启动流式调用
+  streamLLMAgent(customerInput, currentState, {
+    onMetadata: callbacks.onMetadata,
+    onChunk: callbacks.onChunk,
+    onComplete: callbacks.onComplete,
+    onError: () => {
+      // LLM 失败 → 降级到规则引擎
+      callbacks.onError?.('LLM 调用失败，已降级到规则引擎');
     },
-    memory: {
-      currentState: currentState.currentState,
-      exceptionState: currentState.exceptionState,
-      collectedSlots: { ...currentState.collectedSlots },
-    },
-    planning: {
-      reasoning: data.reasoning || '[LLM] ' + data.intent,
-      nextState: data.next_state as MainDialogState,
-      action: 'LLM 生成回复',
-    },
-    output: data.response,
-  };
+  });
 
-  const agentMessage: ChatMessage = {
-    id: `msg-a-${Date.now()}`,
-    role: 'agent',
-    content: data.response,
-    timestamp: Date.now(),
-  };
-
-  const newState: AgentState = {
-    currentState: data.next_state as MainDialogState,
-    exceptionState: mapEmotionToException(data.emotion, data.intent),
-    collectedSlots: updatedSlots,
-    messages: [...currentState.messages, customerMessage, agentMessage],
-    lastDecision: decision,
-    turnCount: currentState.turnCount + 1,
-    isProcessing: false,
-    responseSource: 'llm',
-    llmLatency: data.latency,
-    llmRawResponse: JSON.stringify(data, null, 2),
-  };
-
-  return {
-    newState,
-    customerMessage,
-    agentMessage,
-    rawResponse: JSON.stringify(data, null, 2),
-    latency: data.latency,
-  };
+  return { customerMessage, agentMessageId, sendTime };
 }
 
 /**
@@ -243,11 +272,12 @@ function processWithRule(
   currentState: AgentState,
   customerInput: string
 ): { newState: AgentState; customerMessage: ChatMessage; agentMessage: ChatMessage } {
+  const sendTime = Date.now();
   const customerMessage: ChatMessage = {
-    id: `msg-c-${Date.now()}`,
+    id: `msg-c-${sendTime}`,
     role: 'customer',
     content: customerInput,
-    timestamp: Date.now(),
+    timestamp: sendTime,
   };
 
   // 1. 感知：意图识别 + 实体抽取
@@ -266,6 +296,8 @@ function processWithRule(
     intentResult,
     dialogHistory
   );
+
+  const ruleStartTime = Date.now();
 
   // 4. 构建决策路径
   const decision: AgentDecision = {
@@ -290,11 +322,14 @@ function processWithRule(
     output: response.reply,
   };
 
+  const ruleLatency = Date.now() - ruleStartTime;
+
   const agentMessage: ChatMessage = {
-    id: `msg-a-${Date.now()}`,
+    id: `msg-a-${sendTime}`,
     role: 'agent',
     content: response.reply,
     timestamp: Date.now(),
+    latencyMs: ruleLatency,
   };
 
   const newState: AgentState = {
@@ -314,42 +349,104 @@ function processWithRule(
 }
 
 /**
- * 处理客户输入（统一入口）
+ * 处理客户输入（统一入口 - 规则引擎模式，非流式）
  */
-export async function processCustomerInput(
+export function processCustomerInput(
   currentState: AgentState,
   customerInput: string,
-  mode: AgentMode = 'rule'
-): Promise<{ newState: AgentState; customerMessage: ChatMessage; agentMessage: ChatMessage }> {
+  mode: AgentMode
+): { newState: AgentState; customerMessage: ChatMessage; agentMessage: ChatMessage } {
   if (mode === 'llm') {
-    const result = await processWithLLM(currentState, customerInput);
+    // LLM 模式不应走这个同步路径，应该用 processWithLLMStreaming
+    // 这里作为兜底，降级到规则引擎
+    const ruleResult = processWithRule(currentState, customerInput);
     return {
-      newState: result.newState,
-      customerMessage: result.customerMessage,
-      agentMessage: result.agentMessage,
+      ...ruleResult,
+      newState: {
+        ...ruleResult.newState,
+        responseSource: 'fallback',
+      },
     };
   }
   return processWithRule(currentState, customerInput);
 }
 
-// 导出知识库供外部使用
-export { knowledgeBase };
+/**
+ * 根据流式回调构建最终的 AgentState
+ */
+export function buildFinalStateFromStream(
+  currentState: AgentState,
+  customerMessage: ChatMessage,
+  agentMessageContent: string,
+  metadata: {
+    intent: string;
+    entities: Record<string, string>;
+    emotion: string;
+    next_state: string;
+    reasoning: string;
+    llmLatency: number;
+    rawResponse: string;
+  },
+  totalLatency: number
+): AgentState {
+  const updatedSlots = updateSlotsFromEntities(currentState.collectedSlots, metadata.entities);
 
-// 导出状态标签映射
-export const stateLabels: Record<MainDialogState, string> = {
-  GREETING: '开场问候',
-  BRAND_INQUIRY: '确认品牌',
-  MODEL_INQUIRY: '确认车型',
-  CITY_INQUIRY: '确认城市',
-  TIMING_INQUIRY: '确认时间',
-  CONTACT_COLLECTION: '收集联系方式',
-  FAREWELL: '结束语',
-};
+  const decision: AgentDecision = {
+    perception: {
+      intent: metadata.intent as AgentDecision['perception']['intent'],
+      entities: metadata.entities,
+      emotion: mapEmotion(metadata.emotion),
+    },
+    memory: {
+      currentState: currentState.currentState,
+      exceptionState: currentState.exceptionState,
+      collectedSlots: { ...currentState.collectedSlots },
+    },
+    planning: {
+      reasoning: metadata.reasoning || '[LLM] ' + metadata.intent,
+      nextState: metadata.next_state as MainDialogState,
+      action: 'LLM 生成回复',
+    },
+    output: agentMessageContent,
+  };
 
-export const exceptionLabels: Record<ExceptionState, string> = {
-  NONE: '无',
-  OFF_TRACK: '偏离话题',
-  ABUSE: '辱骂/反感',
-  OUT_OF_SCOPE: '超范围问题',
-  UNCLEAR: '输入不清',
-};
+  const agentMessage: ChatMessage = {
+    id: `msg-a-${customerMessage.timestamp}`,
+    role: 'agent',
+    content: agentMessageContent,
+    timestamp: Date.now(),
+    latencyMs: totalLatency,
+  };
+
+  return {
+    currentState: metadata.next_state as MainDialogState,
+    exceptionState: mapEmotionToException(metadata.emotion, metadata.intent),
+    collectedSlots: updatedSlots,
+    messages: [...currentState.messages, customerMessage, agentMessage],
+    lastDecision: decision,
+    turnCount: currentState.turnCount + 1,
+    isProcessing: false,
+    responseSource: 'llm',
+    llmLatency: metadata.llmLatency,
+    llmRawResponse: metadata.rawResponse,
+  };
+}
+
+/**
+ * 当 LLM 流式失败时，降级到规则引擎
+ */
+export function fallbackToRuleEngine(
+  currentState: AgentState,
+  customerInput: string
+): { newState: AgentState; customerMessage: ChatMessage; agentMessage: ChatMessage } {
+  const ruleResult = processWithRule(currentState, customerInput);
+  return {
+    ...ruleResult,
+    newState: {
+      ...ruleResult.newState,
+      responseSource: 'fallback',
+      llmLatency: null,
+      llmRawResponse: null,
+    },
+  };
+}

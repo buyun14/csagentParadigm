@@ -59,6 +59,10 @@ export interface ChatMessage {
   role: 'agent' | 'customer';
   content: string;
   timestamp: number;
+  /** 消息发送耗时（ms），agent 消息表示从客户发送到收到回复的延迟 */
+  latencyMs?: number;
+  /** 是否正在流式接收中 */
+  isStreaming?: boolean;
 }
 
 // Agent 决策路径（用于调试面板）
