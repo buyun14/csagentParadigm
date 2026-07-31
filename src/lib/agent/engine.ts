@@ -96,11 +96,11 @@ async function streamLLMAgent(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        customerInput,
-        currentState: currentState.currentState,
-        exceptionState: currentState.exceptionState,
-        collectedSlots: currentState.collectedSlots,
-        recentMessages,
+        message: customerInput,
+        current_state: currentState.currentState,
+        exception_state: currentState.exceptionState,
+        collected_slots: currentState.collectedSlots,
+        recent_history: recentMessages,
       }),
       signal: controller.signal,
     });
