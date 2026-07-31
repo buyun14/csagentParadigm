@@ -6,7 +6,6 @@ import type {
   MainDialogState,
   ExceptionState,
   AgentMode,
-  LatencyMetrics,
   LLMModelConfig,
   DualChannelState,
   ResponseSource,
@@ -14,7 +13,6 @@ import type {
 import { recognizeIntent } from './intent';
 import { generateResponse } from './state-machine';
 import { checkCache } from './cache';
-import { estimateTokens } from './prompt-slim';
 
 // 初始槽位状态
 const initialSlots: CollectedSlots = {
@@ -39,6 +37,29 @@ const DEFAULT_MODEL_CONFIG: LLMModelConfig = {
   max_tokens: 150,
 };
 
+// 合法的对话状态集合（用于校验 LLM 返回的 next_state）
+const VALID_DIALOG_STATES: MainDialogState[] = [
+  'GREETING',
+  'BRAND_INQUIRY',
+  'MODEL_INQUIRY',
+  'CITY_INQUIRY',
+  'TIMING_INQUIRY',
+  'CONTACT_COLLECTION',
+  'FAREWELL',
+];
+
+/**
+ * 规范化 LLM 返回的 next_state，非法值回退到当前状态，
+ * 避免状态机跳到不存在的状态导致调试面板显示异常
+ */
+function normalizeNextState(raw: string | undefined, fallback: MainDialogState): MainDialogState {
+  const trimmed = (raw || '').trim();
+  if ((VALID_DIALOG_STATES as string[]).includes(trimmed)) {
+    return trimmed as MainDialogState;
+  }
+  return fallback;
+}
+
 /** 快通道流式回调接口 */
 export interface FastStreamCallbacks {
   onMetadata?: (data: { tokenEstimate: number }) => void;
@@ -48,13 +69,22 @@ export interface FastStreamCallbacks {
   onError?: (error: string) => void;
 }
 
+/** 慢通道结果 */
+export interface SlowChannelResult {
+  emotion: string;
+  entities: Record<string, string>;
+  reasoning: string;
+  guardrail_check: string;
+  latency?: number;
+}
+
 /** 双通道回调接口 */
 export interface DualChannelCallbacks {
   // 快通道回调
   fast: FastStreamCallbacks;
   // 慢通道回调（异步更新）
   slow: {
-    onResult?: (data: { emotion: string; entities: Record<string, string>; reasoning: string; guardrail_check: string }) => void;
+    onResult?: (data: SlowChannelResult) => void;
     onError?: (error: string) => void;
   };
 }
@@ -154,6 +184,14 @@ async function streamFastChannel(
 
     clearTimeout(timeoutId);
 
+    // 检查是否为 SSE 响应（若非 SSE，说明路由/LLM 出错，需触发降级而非静默结束）
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text/event-stream')) {
+      const errorText = await response.text().catch(() => '');
+      callbacks.onError?.(`快通道返回非 SSE 响应: ${errorText.slice(0, 200)}`);
+      return;
+    }
+
     if (!response.body) {
       callbacks.onError?.('响应体为空');
       return;
@@ -162,6 +200,7 @@ async function streamFastChannel(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let sawEvent = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -173,6 +212,7 @@ async function streamFastChannel(
 
       for (const line of lines) {
         if (line.startsWith('data: ')) {
+          sawEvent = true;
           const dataStr = line.slice(6).trim();
           if (dataStr === '[DONE]') continue;
 
@@ -205,6 +245,11 @@ async function streamFastChannel(
         }
       }
     }
+
+    // 读完了整个流但没有任何有效 SSE 事件（如空响应），触发降级
+    if (!sawEvent) {
+      callbacks.onError?.('快通道未返回有效数据');
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     callbacks.onError?.(message);
@@ -218,7 +263,7 @@ async function callSlowChannel(
   customerInput: string,
   currentState: AgentState,
   modelConfig: LLMModelConfig
-): Promise<{ success: boolean; data?: { emotion: string; entities: Record<string, string>; reasoning: string; guardrail_check: string }; error?: string }> {
+): Promise<{ success: boolean; data?: { emotion: string; entities: Record<string, string>; reasoning: string; guardrail_check: string }; latency?: number; error?: string }> {
   try {
     const fullHistory = currentState.messages
       .map((m) => ({ role: m.role, content: m.content }));
@@ -313,42 +358,6 @@ export const exceptionLabels: Record<ExceptionState, string> = {
 };
 
 /**
- * 解析快通道返回的 JSON（提取 intent 和 next_state）
- */
-function parseFastChannelResponse(content: string): { intent: string; next_state: string; response: string } | null {
-  try {
-    let cleaned = content.trim();
-    // 提取 JSON 部分（可能混有文本）
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      cleaned = jsonMatch[0];
-    }
-    if (cleaned.startsWith('```')) {
-      cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
-    }
-    const parsed = JSON.parse(cleaned);
-    if (typeof parsed.response === 'string' && typeof parsed.next_state === 'string') {
-      return {
-        intent: parsed.intent || 'unknown',
-        next_state: parsed.next_state,
-        response: parsed.response,
-      };
-    }
-  } catch {
-    // 尝试从纯文本中提取回复
-  }
-  // 如果无法解析 JSON，把整个内容当作回复
-  if (content.trim().length > 0) {
-    return {
-      intent: 'unknown',
-      next_state: '',
-      response: content.trim(),
-    };
-  }
-  return null;
-}
-
-/**
  * 处理客户输入 - 双通道模式（快通道流式 + 慢通道异步）
  */
 export function processWithDualChannel(
@@ -385,7 +394,10 @@ export function processWithDualChannel(
   // 启动慢通道（异步，不阻塞）
   callSlowChannel(customerInput, currentState, modelConfig).then(result => {
     if (result.success && result.data) {
-      callbacks.slow.onResult?.(result.data);
+      callbacks.slow.onResult?.({
+        ...result.data,
+        latency: result.latency ?? 0,
+      });
     } else {
       callbacks.slow.onError?.(result.error || '慢通道调用失败');
     }
@@ -548,7 +560,8 @@ export function buildFinalStateFromFastChannel(
   latencyData: { firstToken: number; total: number; tokenEstimate: number },
   modelConfig: LLMModelConfig
 ): AgentState {
-  const nextState = (parsedResponse.next_state || currentState.currentState) as MainDialogState;
+  // 校验 next_state，非法值（空/不存在/拼写错误）回退到当前状态
+  const nextState = normalizeNextState(parsedResponse.next_state, currentState.currentState);
 
   const decision: AgentDecision = {
     perception: {
@@ -577,11 +590,19 @@ export function buildFinalStateFromFastChannel(
     latencyMs: latencyData.total,
   };
 
+  // 用最终 agent 消息替换已有的流式占位消息（若有），否则才追加客户消息+最终消息
+  const hasAgentPlaceholder = currentState.messages.some(
+    (m) => m.id === agentMessage.id
+  );
+  const messages = hasAgentPlaceholder
+    ? currentState.messages.map((m) => (m.id === agentMessage.id ? agentMessage : m))
+    : [...currentState.messages, customerMessage, agentMessage];
+
   return {
     currentState: nextState,
     exceptionState: mapEmotionToException('neutral', parsedResponse.intent),
     collectedSlots: currentState.collectedSlots,
-    messages: [...currentState.messages, customerMessage, agentMessage],
+    messages,
     lastDecision: decision,
     turnCount: currentState.turnCount + 1,
     isProcessing: false,
@@ -611,9 +632,11 @@ export function buildFinalStateFromFastChannel(
  */
 export function updateStateWithSlowChannel(
   currentState: AgentState,
-  slowResult: { emotion: string; entities: Record<string, string>; reasoning: string; guardrail_check: string },
-  slowLatency: number
+  slowResult: SlowChannelResult,
+  slowLatency?: number
 ): AgentState {
+  const finalSlowLatency = slowLatency ?? slowResult.latency ?? 0;
+
   // 更新槽位（如果慢通道提取到新实体）
   const updatedSlots = updateSlotsFromEntities(currentState.collectedSlots, slowResult.entities);
 
@@ -638,7 +661,7 @@ export function updateStateWithSlowChannel(
     fastStatus: currentState.dualChannel?.fastStatus || 'done',
     slowStatus: 'done',
     fastLatency: currentState.dualChannel?.fastLatency || null,
-    slowLatency,
+    slowLatency: finalSlowLatency,
   };
 
   return {

@@ -18,6 +18,7 @@ import {
   loadModelConfig,
   saveModelConfig,
 } from '@/lib/agent/engine';
+import type { SlowChannelResult } from '@/lib/agent/engine';
 import type { AgentState, AgentMode, ChatMessage, LLMModelConfig } from '@/lib/agent/types';
 import { PanelRightClose, PanelRightOpen, Cpu, Workflow, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -41,6 +42,9 @@ export default function Home() {
     sendTime: number;
     agentMessageId: string;
   }>({ content: '', firstTokenLatency: 0, tokenEstimate: 0, customerMessage: null, sendTime: 0, agentMessageId: '' });
+
+  // 慢通道结果缓存：防止慢通道先返回时被快通道 onComplete 整体覆盖
+  const slowResultRef = useRef<SlowChannelResult | null>(null);
 
   // 初始化模型配置
   useEffect(() => {
@@ -124,6 +128,7 @@ export default function Home() {
         sendTime: Date.now(),
         agentMessageId: `msg-a-${Date.now()}`,
       };
+      slowResultRef.current = null;
 
       const { customerMessage, agentMessageId } = processWithDualChannel(
         currentState,
@@ -168,16 +173,24 @@ export default function Home() {
 
               streamRef.current.customerMessage = customerMessage;
 
-              const finalState = buildFinalStateFromFastChannel(
-                currentState,
-                customerMessage,
-                parsed.response,
-                parsed,
-                { firstToken: streamRef.current.firstTokenLatency, total: totalLatency, tokenEstimate: streamRef.current.tokenEstimate },
-                modelConfig
-              );
+              // 用函数式更新基于最新 prev 增量构建最终状态，并合并可能已先返回的慢通道结果，
+              // 避免慢通道先完成时其槽位/情绪更新被快通道整体覆盖
+              setAgentState((prev) => {
+                const finalState = buildFinalStateFromFastChannel(
+                  prev,
+                  customerMessage,
+                  parsed.response,
+                  parsed,
+                  { firstToken: streamRef.current.firstTokenLatency, total: totalLatency, tokenEstimate: streamRef.current.tokenEstimate },
+                  modelConfig
+                );
 
-              setAgentState(finalState);
+                const slow = slowResultRef.current;
+                if (slow) {
+                  return updateStateWithSlowChannel(finalState, slow, slow.latency ?? 0);
+                }
+                return finalState;
+              });
               setStreamingMessageId(null);
             },
             onError: () => {
@@ -189,8 +202,10 @@ export default function Home() {
           },
           slow: {
             onResult: (data) => {
+              // 缓存慢通道结果，供快通道 onComplete 合并，避免被整体覆盖
+              slowResultRef.current = data;
               // 异步更新调试面板（不阻塞主流程）
-              setAgentState((prev) => updateStateWithSlowChannel(prev, data, 0));
+              setAgentState((prev) => updateStateWithSlowChannel(prev, data, data.latency ?? 0));
             },
             onError: () => {
               // 慢通道失败不影响主流程
@@ -407,10 +422,11 @@ function parseFastResponse(content: string, currentState: string): { intent: str
       cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
     }
     const parsed = JSON.parse(cleaned);
-    if (typeof parsed.response === 'string' && typeof parsed.next_state === 'string') {
+    // response 存在即可用；next_state 缺失/非法时回退到当前状态（由 engine 校验兜底）
+    if (typeof parsed.response === 'string') {
       return {
         intent: parsed.intent || 'unknown',
-        next_state: parsed.next_state,
+        next_state: typeof parsed.next_state === 'string' ? parsed.next_state : currentState,
         response: parsed.response,
       };
     }

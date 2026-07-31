@@ -40,7 +40,10 @@ ${kbSection}${historySection}
 【规则】辱骂→道歉退出 | 反感→安抚退出 | 偏离→拉回 | 问价格→引导对接4S店 | 不清晰→追问 | 不编造车型 | 每次只问一个
 
 返回JSON:
-{"intent":"意图","next_state":"下一状态","response":"回复"}`;
+{"intent":"意图","next_state":"下一状态","response":"回复"}
+
+【next_state 必须严格是以下之一】GREETING / BRAND_INQUIRY / MODEL_INQUIRY / CITY_INQUIRY / TIMING_INQUIRY / CONTACT_COLLECTION / FAREWELL（未收集到新信息时保持当前状态）。
+【intent 参考】greet / confirm_brand / confirm_model / confirm_city / confirm_time / confirm_surname / ask_price / out_of_scope / off_track / unclear / abuse / dislike / farewell。`;
 }
 
 /**
