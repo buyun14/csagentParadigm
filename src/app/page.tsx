@@ -6,6 +6,7 @@ import { ChatArea } from '@/components/chat/chat-area';
 import { ChatInput } from '@/components/chat/chat-input';
 import { DebugPanel } from '@/components/debug/debug-panel';
 import { ModelSettingsPanel } from '@/components/settings/model-settings-panel';
+import { useIsMobile } from '@/hooks/use-mobile';
 import {
   createInitialState,
   processCustomerInput,
@@ -32,6 +33,12 @@ export default function Home() {
   const [panelWidth, setPanelWidth] = useState(360);
   const [isResizing, setIsResizing] = useState(false);
   const [modelConfig, setModelConfig] = useState<LLMModelConfig>(() => loadModelConfig());
+  const isMobile = useIsMobile();
+
+  // 移动端自动隐藏调试面板，避免挤压聊天区
+  useEffect(() => {
+    if (isMobile) setShowDebug(false);
+  }, [isMobile]);
 
   // 流式数据 ref
   const streamRef = useRef<{
@@ -59,7 +66,8 @@ export default function Home() {
     
     const handleMouseMove = (e: MouseEvent) => {
       const newWidth = window.innerWidth - e.clientX;
-      setPanelWidth(Math.max(280, Math.min(500, newWidth)));
+      // 上限受视口宽度约束，避免窄窗口下面板挤压聊天区
+      setPanelWidth(Math.max(280, Math.min(500, newWidth, window.innerWidth * 0.6)));
     };
     
     const handleMouseUp = () => {
@@ -361,7 +369,7 @@ export default function Home() {
             />
             <div 
               className="border-l border-slate-200 bg-white flex-shrink-0 overflow-hidden"
-              style={{ width: panelWidth }}
+              style={{ width: panelWidth, maxWidth: 'min(60vw, 500px)' }}
             >
               <div className="h-full flex flex-col">
                 {/* Model Settings */}
