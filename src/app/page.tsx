@@ -16,6 +16,7 @@ import {
   processCacheHit,
   checkCacheHit,
   fallbackToRuleEngine,
+  getDefaultModelConfig,
   loadModelConfig,
   saveModelConfig,
 } from '@/lib/agent/engine';
@@ -32,7 +33,7 @@ export default function Home() {
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(360);
   const [isResizing, setIsResizing] = useState(false);
-  const [modelConfig, setModelConfig] = useState<LLMModelConfig>(() => loadModelConfig());
+  const [modelConfig, setModelConfig] = useState<LLMModelConfig>(() => getDefaultModelConfig());
   const isMobile = useIsMobile();
 
   // 移动端自动隐藏调试面板，避免挤压聊天区
