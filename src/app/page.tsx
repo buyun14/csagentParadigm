@@ -53,6 +53,15 @@ export default function Home() {
   // 慢通道结果缓存：防止慢通道先返回时被快通道 onComplete 整体覆盖
   const slowResultRef = useRef<SlowChannelResult | null>(null);
 
+  // 最新状态 ref：供回调/事件读取，避免在 setState updater 中产生副作用
+  const agentStateRef = useRef(agentState);
+  useEffect(() => {
+    agentStateRef.current = agentState;
+  }, [agentState]);
+
+  // 流式请求代次令牌：重置对话或新发送时递增，使所有进行中的回调失效，防止旧结果覆盖新状态
+  const generationRef = useRef(0);
+
   // 初始化模型配置
   useEffect(() => {
     const saved = loadModelConfig();
@@ -80,19 +89,14 @@ export default function Home() {
     document.addEventListener('mouseup', handleMouseUp);
   }, []);
 
-  const handleSend = useCallback(async (message: string) => {
-    // 获取当前状态
-    const currentState = await new Promise<AgentState>((resolve) => {
-      setAgentState((prev) => {
-        if (prev.currentState === 'FAREWELL') {
-          resolve(prev);
-        }
-        resolve(prev);
-        return { ...prev, isProcessing: true };
-      });
-    });
-
+  const handleSend = useCallback((message: string) => {
+    // 读取最新状态（agentStateRef 同步），避免在 setState updater 中产生副作用
+    const currentState = agentStateRef.current;
     if (currentState.currentState === 'FAREWELL') return;
+
+    // 递增代次令牌：新发送使上一轮进行中的流式回调失效
+    const generation = ++generationRef.current;
+    setAgentState((prev) => ({ ...prev, isProcessing: true }));
 
     // 规则引擎模式
     if (mode === 'rule') {
@@ -145,12 +149,15 @@ export default function Home() {
         {
           fast: {
             onMetadata: (data) => {
+              if (generationRef.current !== generation) return;
               streamRef.current.tokenEstimate = data.tokenEstimate;
             },
             onFirstToken: (latency) => {
+              if (generationRef.current !== generation) return;
               streamRef.current.firstTokenLatency = latency;
             },
             onChunk: (content) => {
+              if (generationRef.current !== generation) return;
               streamRef.current.content += content;
               const accumulated = streamRef.current.content;
 
@@ -166,6 +173,7 @@ export default function Home() {
               });
             },
             onComplete: (data) => {
+              if (generationRef.current !== generation) return;
               const totalLatency = data.latency;
               const fullContent = data.fullContent;
 
@@ -202,6 +210,7 @@ export default function Home() {
               setStreamingMessageId(null);
             },
             onError: () => {
+              if (generationRef.current !== generation) return;
               // 快通道失败 → 降级到规则引擎
               const { newState } = fallbackToRuleEngine(currentState, message);
               setAgentState({ ...newState, responseSource: 'fallback' });
@@ -210,12 +219,14 @@ export default function Home() {
           },
           slow: {
             onResult: (data) => {
+              if (generationRef.current !== generation) return;
               // 缓存慢通道结果，供快通道 onComplete 合并，避免被整体覆盖
               slowResultRef.current = data;
               // 异步更新调试面板（不阻塞主流程）
               setAgentState((prev) => updateStateWithSlowChannel(prev, data, data.latency ?? 0));
             },
             onError: () => {
+              if (generationRef.current !== generation) return;
               // 慢通道失败不影响主流程
               setAgentState((prev) => ({
                 ...prev,
@@ -244,6 +255,8 @@ export default function Home() {
   }, [mode, modelConfig]);
 
   const handleReset = useCallback(() => {
+    // 递增代次令牌，使进行中的流式回调失效，防止旧结果覆盖重置后的状态
+    generationRef.current++;
     setAgentState(createInitialState());
     setStreamingMessageId(null);
   }, []);
