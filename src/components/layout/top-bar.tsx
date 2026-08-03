@@ -1,8 +1,9 @@
 'use client';
 
-import { Phone, PhoneOff, Clock, Hash } from 'lucide-react';
+import { PhoneOff, Clock, Hash } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 import { useEffect, useState } from 'react';
 
 interface TopBarProps {
@@ -38,8 +39,13 @@ export function TopBar({ onReset, turnCount, isCallEnded }: TopBarProps) {
       {/* Left: Call info */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-sm font-medium">通话中</span>
+          <div
+            className={cn(
+              'w-2 h-2 rounded-full',
+              isCallEnded ? 'bg-slate-500' : 'bg-emerald-400 animate-pulse'
+            )}
+          />
+          <span className="text-sm font-medium">{isCallEnded ? '通话已结束' : '通话中'}</span>
         </div>
         <div className="flex items-center gap-1.5 text-slate-300 text-sm">
           <Hash className="h-3.5 w-3.5" />
