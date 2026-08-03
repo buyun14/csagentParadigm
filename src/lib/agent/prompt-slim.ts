@@ -34,7 +34,7 @@ export function buildSlimPrompt(
   return `你是汽车营销中心电话客服。口语化、简短、自然。称呼"先生/女士"。
 
 【状态】${currentState}（${stateGoals[currentState]}）
-【已收集】品牌:${slots.brand || '无'}, 车系:${slots.series || '无'}, 城市:${slots.city || '无'}, 时间:${slots.timing || '无'}, 姓氏:${slots.surname || '无'}
+【已收集】品牌:${slots.brand || '无'}, 车系:${slots.series || '无'}, 城市:${slots.city || '无'}, 时间:${slots.timing || '无'}, 姓氏:${slots.surname || '无'}, 手机尾号:${slots.phoneTail || '无'}
 ${kbSection}${historySection}
 
 【规则】辱骂→道歉退出 | 反感→安抚退出 | 偏离→拉回 | 问价格→引导对接4S店 | 不清晰→追问 | 不编造车型 | 每次只问一个

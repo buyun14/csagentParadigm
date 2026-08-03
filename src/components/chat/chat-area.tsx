@@ -30,8 +30,8 @@ export function ChatArea({ messages, isProcessing, streamingMessageId }: ChatAre
   }, [messages, streamingMessageId]);
 
   return (
-    <ScrollArea className="flex-1 px-4 py-3">
-      <div className="flex flex-col gap-3">
+    <ScrollArea className="flex-1 min-h-0">
+      <div className="flex flex-col gap-3 px-4 py-3">
         {messages.map((msg) => (
           <MessageBubble
             key={msg.id}

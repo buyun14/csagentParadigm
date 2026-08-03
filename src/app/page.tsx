@@ -272,7 +272,7 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="h-screen flex flex-col bg-slate-50 overflow-hidden">
+    <div className="h-dvh flex flex-col bg-slate-50 overflow-hidden">
       {/* Top Bar */}
       <TopBar
         onReset={handleReset}
@@ -382,23 +382,21 @@ export default function Home() {
               onMouseDown={handleMouseDown}
             />
             <div 
-              className="border-l border-slate-200 bg-white flex-shrink-0 overflow-hidden"
+              className="border-l border-slate-200 bg-white flex-shrink-0 overflow-hidden flex flex-col"
               style={{ width: panelWidth, maxWidth: 'min(60vw, 500px)' }}
             >
-              <div className="h-full flex flex-col">
-                {/* Model Settings */}
-                {(mode === 'dual' || mode === 'llm') && (
-                  <div className="p-2 border-b border-slate-100">
-                    <ModelSettingsPanel 
-                      config={modelConfig} 
-                      onConfigChange={handleModelConfigChange}
-                    />
-                  </div>
-                )}
-                {/* Debug Panel */}
-                <div className="flex-1 overflow-hidden">
-                  <DebugPanel agentState={agentState} mode={mode} />
+              {/* Model Settings */}
+              {(mode === 'dual' || mode === 'llm') && (
+                <div className="p-2 border-b border-slate-100 flex-shrink-0">
+                  <ModelSettingsPanel 
+                    config={modelConfig} 
+                    onConfigChange={handleModelConfigChange}
+                  />
                 </div>
+              )}
+              {/* Debug Panel */}
+              <div className="flex-1 overflow-hidden min-h-0">
+                <DebugPanel agentState={agentState} mode={mode} />
               </div>
             </div>
           </>

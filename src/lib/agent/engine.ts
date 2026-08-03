@@ -60,6 +60,83 @@ function normalizeNextState(raw: string | undefined, fallback: MainDialogState):
   return fallback;
 }
 
+// 慢通道 LLM 返回的实体键为中文（品牌/车系/…），映射为内部英文键
+const ENTITY_KEY_ALIASES: Record<string, keyof CollectedSlots> = {
+  品牌: 'brand',
+  车系: 'series',
+  城市: 'city',
+  时间: 'timing',
+  姓氏: 'surname',
+  手机尾号: 'phoneTail',
+  车型: 'model',
+  动力类型: 'powerType',
+};
+
+/**
+ * 将慢通道返回的实体键归一化为内部英文键（兼容中英文混合返回），
+ * 保证 updateSlotsFromEntities 能正确回填槽位。
+ */
+function normalizeEntityKeys(entities: Record<string, string>): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(entities || {})) {
+    const mapped = ENTITY_KEY_ALIASES[key] || key;
+    if (value && mapped) normalized[mapped] = value;
+  }
+  return normalized;
+}
+
+// 主流程状态推进顺序（用于校验 LLM 返回的状态迁移）
+const STATE_ORDER: Record<MainDialogState, number> = {
+  GREETING: 0,
+  BRAND_INQUIRY: 1,
+  MODEL_INQUIRY: 2,
+  CITY_INQUIRY: 3,
+  TIMING_INQUIRY: 4,
+  CONTACT_COLLECTION: 5,
+  FAREWELL: 6,
+};
+
+// 各 intent 至少应推进到的状态（防止 LLM 状态跳回/停滞导致流程倒退）
+const INTENT_MIN_STATE: Partial<Record<string, MainDialogState>> = {
+  confirm_brand: 'MODEL_INQUIRY',
+  confirm_model: 'CITY_INQUIRY',
+  confirm_city: 'TIMING_INQUIRY',
+  confirm_time: 'CONTACT_COLLECTION',
+  // confirm_surname 只确认姓氏，联系方式（手机尾号）可能尚未收集，不直接闭环
+  confirm_surname: 'CONTACT_COLLECTION',
+  abuse: 'FAREWELL',
+  dislike: 'FAREWELL',
+  farewell: 'FAREWELL',
+};
+
+/**
+ * 业务状态迁移校验（快通道 LLM 的 next_state 只是参考值）：
+ * 1. 姓氏 + 手机尾号均已收集 → 信息闭环，强制 FAREWELL；
+ * 2. intent 驱动的推进下限（confirm_* 至少推进到对应下一状态）；
+ * 3. 不允许倒退到早于当前状态的位置；
+ * 4. FAREWELL 为终态，不可回退（当前已是 FAREWELL 时保持）。
+ * 取所有候选序位的最大值，保证流程只进不退。
+ */
+function enforceStateTransition(
+  current: MainDialogState,
+  rawNext: MainDialogState,
+  intent: string,
+  slots: CollectedSlots
+): MainDialogState {
+  const intentMin = INTENT_MIN_STATE[intent];
+  const infoComplete = Boolean(slots.surname && slots.phoneTail);
+  const candidates = [
+    STATE_ORDER[current],
+    STATE_ORDER[rawNext],
+    intentMin !== undefined ? STATE_ORDER[intentMin] : -1,
+    infoComplete ? STATE_ORDER['FAREWELL'] : -1,
+  ];
+  const best = Math.max(...candidates);
+  return (Object.keys(STATE_ORDER) as MainDialogState[]).find(
+    (s) => STATE_ORDER[s] === best
+  )!;
+}
+
 /** 快通道流式回调接口 */
 export interface FastStreamCallbacks {
   onMetadata?: (data: { tokenEstimate: number }) => void;
@@ -262,7 +339,8 @@ async function streamFastChannel(
 async function callSlowChannel(
   customerInput: string,
   currentState: AgentState,
-  modelConfig: LLMModelConfig
+  modelConfig: LLMModelConfig,
+  fastResponse: string
 ): Promise<{ success: boolean; data?: { emotion: string; entities: Record<string, string>; reasoning: string; guardrail_check: string }; latency?: number; error?: string }> {
   try {
     const fullHistory = currentState.messages
@@ -278,6 +356,7 @@ async function callSlowChannel(
         message: customerInput,
         current_state: currentState.currentState,
         collected_slots: currentState.collectedSlots,
+        fast_response: fastResponse,
         full_history: fullHistory,
         model_params: modelConfig,
       }),
@@ -303,6 +382,7 @@ function updateSlotsFromEntities(
   const newSlots = { ...currentSlots };
   if (entities.brand) newSlots.brand = entities.brand;
   if (entities.series) newSlots.series = entities.series;
+  if (entities.model) newSlots.model = entities.model;
   if (entities.city) newSlots.city = entities.city;
   if (entities.timing) newSlots.timing = entities.timing;
   if (entities.surname) newSlots.surname = entities.surname;
@@ -380,27 +460,35 @@ export function processWithDualChannel(
 
   const agentMessageId = `msg-a-${sendTime}`;
 
+  // 启动慢通道：等快通道产出回复后再启动，携带快通道回复供护栏复核
+  const startSlowChannel = (fastResponse: string) => {
+    callSlowChannel(customerInput, currentState, modelConfig, fastResponse).then(result => {
+      if (result.success && result.data) {
+        callbacks.slow.onResult?.({
+          ...result.data,
+          latency: result.latency ?? 0,
+        });
+      } else {
+        callbacks.slow.onError?.(result.error || '慢通道调用失败');
+      }
+    });
+  };
+
   // 启动快通道（流式）
   streamFastChannel(customerInput, currentState, modelConfig, {
     onMetadata: callbacks.fast.onMetadata,
     onFirstToken: callbacks.fast.onFirstToken,
     onChunk: callbacks.fast.onChunk,
-    onComplete: callbacks.fast.onComplete,
+    onComplete: (data) => {
+      // 快通道完成后再启动慢通道，带上快通道的完整回复
+      startSlowChannel(data.fullContent);
+      callbacks.fast.onComplete?.(data);
+    },
     onError: () => {
+      // 快通道失败：慢通道仍独立分析（无快通道回复可参考）
+      startSlowChannel('');
       callbacks.fast.onError?.('快通道调用失败，已降级到规则引擎');
     },
-  });
-
-  // 启动慢通道（异步，不阻塞）
-  callSlowChannel(customerInput, currentState, modelConfig).then(result => {
-    if (result.success && result.data) {
-      callbacks.slow.onResult?.({
-        ...result.data,
-        latency: result.latency ?? 0,
-      });
-    } else {
-      callbacks.slow.onError?.(result.error || '慢通道调用失败');
-    }
   });
 
   return { customerMessage, agentMessageId, sendTime };
@@ -561,7 +649,14 @@ export function buildFinalStateFromFastChannel(
   modelConfig: LLMModelConfig
 ): AgentState {
   // 校验 next_state，非法值（空/不存在/拼写错误）回退到当前状态
-  const nextState = normalizeNextState(parsedResponse.next_state, currentState.currentState);
+  const normalizedNext = normalizeNextState(parsedResponse.next_state, currentState.currentState);
+  // 业务状态迁移校验：防倒退/防跳回，信息闭环时强制 FAREWELL
+  const nextState = enforceStateTransition(
+    currentState.currentState,
+    normalizedNext,
+    parsedResponse.intent,
+    currentState.collectedSlots
+  );
 
   const decision: AgentDecision = {
     perception: {
@@ -575,7 +670,8 @@ export function buildFinalStateFromFastChannel(
       collectedSlots: { ...currentState.collectedSlots },
     },
     planning: {
-      reasoning: '[快通道] ' + parsedResponse.intent,
+      reasoning: '[快通道] ' + parsedResponse.intent
+        + (nextState !== normalizedNext ? `（状态迁移已校正: ${normalizedNext} → ${nextState}）` : ''),
       nextState,
       action: 'LLM 快通道生成',
     },
@@ -637,8 +733,18 @@ export function updateStateWithSlowChannel(
 ): AgentState {
   const finalSlowLatency = slowLatency ?? slowResult.latency ?? 0;
 
+  // 归一化慢通道返回的实体键（中文键 → 内部英文键），再回填槽位
+  const normalizedEntities = normalizeEntityKeys(slowResult.entities);
   // 更新槽位（如果慢通道提取到新实体）
-  const updatedSlots = updateSlotsFromEntities(currentState.collectedSlots, slowResult.entities);
+  const updatedSlots = updateSlotsFromEntities(currentState.collectedSlots, normalizedEntities);
+
+  // 信息闭环检测：姓氏 + 手机尾号均已收集且对话尚未结束 → 立即进入 FAREWELL，
+  // 无需等下一轮用户输入（慢通道回填完成即闭环）
+  const infoComplete = Boolean(updatedSlots.surname && updatedSlots.phoneTail);
+  const nextCurrentState: MainDialogState =
+    infoComplete && currentState.currentState !== 'FAREWELL'
+      ? 'FAREWELL'
+      : currentState.currentState;
 
   // 更新决策路径
   const updatedDecision = currentState.lastDecision
@@ -647,7 +753,7 @@ export function updateStateWithSlowChannel(
         perception: {
           ...currentState.lastDecision.perception,
           emotion: mapEmotion(slowResult.emotion),
-          entities: { ...currentState.lastDecision.perception.entities, ...slowResult.entities },
+          entities: { ...currentState.lastDecision.perception.entities, ...normalizedEntities },
         },
         planning: {
           ...currentState.lastDecision.planning,
@@ -666,6 +772,7 @@ export function updateStateWithSlowChannel(
 
   return {
     ...currentState,
+    currentState: nextCurrentState,
     collectedSlots: updatedSlots,
     lastDecision: updatedDecision,
     exceptionState: mapEmotionToException(slowResult.emotion, updatedDecision?.perception.intent || ''),
