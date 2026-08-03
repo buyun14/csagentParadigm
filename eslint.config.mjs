@@ -45,8 +45,9 @@ const eslintConfig = defineConfig([
     // Build artifacts:
     'server.js',
     'dist/**',
-    // Script files (CommonJS):
+    // Script files (CommonJS / cross-platform launchers):
     'scripts/**/*.js',
+    'scripts/**/*.mjs',
   ]),
 ]);
 

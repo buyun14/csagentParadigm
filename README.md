@@ -10,6 +10,13 @@
 coze dev
 ```
 
+Windows 本地开发可直接使用（跨平台，无需 bash）：
+
+```bash
+pnpm install   # 安装依赖（仅首次或依赖变更后）
+pnpm dev       # 启动开发服务器（http://localhost:5000，自动清理占用端口）
+```
+
 启动后，在浏览器中打开 [http://localhost:5000](http://localhost:5000) 查看应用。
 
 开发服务器支持热更新，修改代码后页面会自动刷新。
@@ -20,11 +27,15 @@ coze dev
 coze build
 ```
 
+Windows 下等价命令：`pnpm build`
+
 ### 启动生产服务器
 
 ```bash
 coze start
 ```
+
+Windows 下等价命令：`pnpm start`（需先执行 `pnpm build` 生成 `dist/`）
 
 ## 项目结构
 

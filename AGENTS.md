@@ -57,6 +57,12 @@
 - 安装所有依赖：`pnpm install`
 - 移除依赖：`pnpm remove <package>`
 
+## 平台兼容
+
+- `scripts/*.mjs` 为跨平台入口（Windows / macOS / Linux），`package.json` 与 `.coze` 均指向它们，**不依赖 bash**；`scripts/*.sh` 保留给 Linux/macOS 或 CI 使用。
+- Windows 本地开发：`pnpm install` → `pnpm dev`（端口 5000，自动清理占用端口）/ `pnpm build` / `pnpm start`。
+- `pnpm dev` 的端口可通过环境变量 `DEPLOY_RUN_PORT`（或 `PORT`）覆盖，如 `$env:DEPLOY_RUN_PORT=6000; pnpm dev`。
+
 ## 开发规范
 
 ### 编码规范
