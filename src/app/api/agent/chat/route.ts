@@ -91,6 +91,17 @@ export async function POST(request: NextRequest) {
     messages.push({ role: 'user', content: customerInput });
     latencyMetrics.promptBuild = Date.now() - promptBuildStart;
 
+    // ===== 调试日志：打印实际发给 LLM 的提示词（变量已替换为真实值）与模型参数 =====
+    console.log('[agent-chat] ========== chat 通道请求 ==========');
+    console.log('[agent-chat] current_state =', currentState);
+    console.log('[agent-chat] collected_slots =', JSON.stringify(collectedSlots));
+    console.log('[agent-chat] 用户输入 =', customerInput);
+    console.log('[agent-chat] ----- System Prompt（变量已替换为实际值） -----');
+    console.log(systemPrompt);
+    console.log('[agent-chat] ----- 发送给模型的完整消息列表 -----');
+    console.log(JSON.stringify(messages, null, 2));
+    console.log('[agent-chat] 模型参数 =', JSON.stringify(llmParams));
+
     // 阶段2: 调用 LLM
     const llmCallStart = Date.now();
     const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
@@ -108,6 +119,11 @@ export async function POST(request: NextRequest) {
     latencyMetrics.llmCall = Date.now() - llmCallStart;
     latencyMetrics.generation = latencyMetrics.llmCall;
 
+    // ===== 调试日志：打印 LLM 原始输出 =====
+    console.log('[agent-chat] ----- LLM 原始输出 -----');
+    console.log(response.content);
+    console.log('[agent-chat] ----- chat 输出结束 -----');
+
     // 阶段3: 解析 LLM 返回
     const parseStart = Date.now();
     const parsed = parseLLMResponse(response.content);
@@ -117,6 +133,7 @@ export async function POST(request: NextRequest) {
       // 返回错误 SSE 事件
       latencyMetrics.total = Date.now() - requestStartTime;
       latencyMetrics.firstToken = latencyMetrics.total;
+      console.log('[agent-chat] LLM 返回格式异常:', parsed.error, '原始内容:', response.content);
       
       const encoder = new TextEncoder();
       const stream = new ReadableStream({
@@ -150,14 +167,12 @@ export async function POST(request: NextRequest) {
     // 构建 SSE 流式响应
     const responseText = parsed.data.response;
     const encoder = new TextEncoder();
-    let firstTokenSent = false;
 
     const stream = new ReadableStream({
       start(controller) {
         // 1. 先发送元数据事件
         const firstTokenTime = Date.now() - requestStartTime;
         latencyMetrics.firstToken = firstTokenTime;
-        firstTokenSent = true;
 
         controller.enqueue(encoder.encode(sseEncode({
           type: 'metadata',
@@ -224,7 +239,8 @@ export async function POST(request: NextRequest) {
     if (!latencyMetrics.firstToken) {
       latencyMetrics.firstToken = latencyMetrics.total;
     }
-    
+    console.log('[agent-chat] LLM 调用失败:', error instanceof Error ? error.message : String(error));
+
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       start(controller) {

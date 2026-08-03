@@ -59,9 +59,25 @@ export async function POST(request: NextRequest) {
     if (model_params.top_p !== undefined) modelOptions.top_p = model_params.top_p;
     if (model_params.max_tokens !== undefined) modelOptions.max_tokens = model_params.max_tokens;
 
+    // ===== 调试日志：打印实际发给 LLM 的提示词（变量已替换为真实值）与模型参数 =====
+    console.log('[agent-slow] ========== 慢通道请求 ==========');
+    console.log('[agent-slow] current_state =', current_state);
+    console.log('[agent-slow] collected_slots =', JSON.stringify(collected_slots));
+    console.log('[agent-slow] 用户输入 =', message);
+    console.log('[agent-slow] ----- System Prompt（变量已替换为实际值） -----');
+    console.log(systemPrompt);
+    console.log('[agent-slow] ----- 发送给模型的完整消息列表 -----');
+    console.log(JSON.stringify(messages, null, 2));
+    console.log('[agent-slow] 模型参数 =', JSON.stringify(modelOptions));
+
     // 调用 LLM（非流式，等待完整结果）
     const response = await client.invoke(messages, modelOptions);
     const latency = Date.now() - startTime;
+
+    // ===== 调试日志：打印 LLM 原始输出 =====
+    console.log('[agent-slow] ----- LLM 原始输出 -----');
+    console.log(response.content);
+    console.log('[agent-slow] ----- 慢通道输出结束 -----');
 
     // 解析 JSON 响应
     let parsed: {
@@ -98,6 +114,7 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     const latency = Date.now() - startTime;
+    console.log('[agent-slow] 慢通道调用异常:', error instanceof Error ? error.message : String(error));
     return new Response(
       JSON.stringify({ 
         success: false,

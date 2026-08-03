@@ -60,6 +60,17 @@ export async function POST(request: NextRequest) {
     if (model_params.presence_penalty !== undefined) modelOptions.presence_penalty = model_params.presence_penalty;
     if (model_params.frequency_penalty !== undefined) modelOptions.frequency_penalty = model_params.frequency_penalty;
 
+    // ===== 调试日志：打印实际发给 LLM 的提示词（变量已替换为真实值）与模型参数 =====
+    console.log('[agent-fast] ========== 快通道请求 ==========');
+    console.log('[agent-fast] current_state =', current_state);
+    console.log('[agent-fast] collected_slots =', JSON.stringify(collected_slots));
+    console.log('[agent-fast] 用户输入 =', message);
+    console.log('[agent-fast] ----- System Prompt（变量已替换为实际值） -----');
+    console.log(systemPrompt);
+    console.log('[agent-fast] ----- 发送给模型的完整消息列表 -----');
+    console.log(JSON.stringify(messages, null, 2));
+    console.log('[agent-fast] 模型参数 =', JSON.stringify(modelOptions));
+
     // 调用 LLM（流式）
     const resp = await client.stream(messages, modelOptions);
 
@@ -94,6 +105,11 @@ export async function POST(request: NextRequest) {
             }
           }
 
+          // ===== 调试日志：打印 LLM 原始输出 =====
+          console.log('[agent-fast] ----- LLM 原始输出 -----');
+          console.log(fullContent);
+          console.log('[agent-fast] ----- 快通道输出结束 -----');
+
           // 发送完成事件（包含完整内容供前端解析）
           const completeLatency = Date.now() - startTime;
           controller.enqueue(encoder.encode(
@@ -107,6 +123,7 @@ export async function POST(request: NextRequest) {
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
           controller.close();
         } catch (streamError) {
+          console.log('[agent-fast] 流式处理失败:', String(streamError));
           controller.enqueue(encoder.encode(
             `data: ${JSON.stringify({ type: 'error', error: '流式处理失败', detail: String(streamError) })}\n\n`
           ));
@@ -124,6 +141,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const latency = Date.now() - startTime;
+    console.log('[agent-fast] 快通道调用异常:', error instanceof Error ? error.message : String(error));
     return new Response(
       JSON.stringify({ 
         error: '快通道调用失败', 
