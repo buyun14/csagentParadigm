@@ -17,7 +17,16 @@ export function ChatArea({ messages, isProcessing, streamingMessageId }: ChatAre
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = bottomRef.current;
+    if (!el) return;
+    // 定位 Radix ScrollArea 的实际滚动容器
+    const viewport = el.closest<HTMLElement>('[data-slot="scroll-area-viewport"]') ?? el.parentElement;
+    if (!viewport) return;
+    // 仅在用户接近底部时自动跟随，避免流式更新劫持用户翻阅历史消息
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    if (distanceFromBottom < 80) {
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, streamingMessageId]);
 
   return (
