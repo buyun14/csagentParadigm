@@ -37,6 +37,26 @@ coze start
 
 Windows 下等价命令：`pnpm start`（需先执行 `pnpm build` 生成 `dist/`）
 
+### 测试与校验
+
+```bash
+pnpm test       # vitest 单测（核心模块 117 例）
+pnpm validate   # ts-check + eslint + stylelint 全量校验
+pnpm exec tsx scripts/demo-walkthrough.ts  # 演示用例实测（rule 模式，离线）
+```
+
+### 老系统数据导入（一次性）
+
+```bash
+node scripts/import-legacy.mjs   # 解析 相关资料收集/现有系统流程/ → src/lib/agent/legacy/
+```
+
+### 交付文档（docs/）
+
+- `对比分析-老系统流程vs范式.md`：15 子流程 ↔ 7 状态机映射、21 条知识库对照、记忆机制差异
+- `移交文档-平台侧最小改动落地建议.md`：平台侧全局变量清单 + 节点模板改造示例 + 验收指标
+- `演示用例集.md`：可复现演示用例
+
 ## 项目结构
 
 ```

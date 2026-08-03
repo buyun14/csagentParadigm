@@ -11,25 +11,31 @@
 ## 目录结构
 
 ```
+├── docs/                  # 交付文档
+│   ├── 对比分析-老系统流程vs范式.md   # 15 子流程↔7 状态机映射、21 条知识库对照、记忆机制差异
+│   ├── 移交文档-平台侧最小改动落地建议.md # 平台侧全局变量清单 + 节点模板改造示例 + 验收指标
+│   └── 演示用例集.md                  # 可复现演示用例（rule 模式，离线可跑）
 ├── public/                 # 静态资源
 ├── scripts/                # 跨平台脚本（.mjs 为主，Windows/macOS/Linux；.sh 保留给 Linux/CI）
 │   ├── build.mjs|.sh       # 构建
 │   ├── dev.mjs|.sh         # 开发启动
 │   ├── prepare.mjs|.sh     # 预处理
 │   ├── start.mjs|.sh       # 生产启动
-│   └── validate.mjs|.sh    # 校验（ts-check + lint）
+│   ├── validate.mjs|.sh    # 校验（ts-check + lint）
+│   ├── import-legacy.mjs   # 老系统流程/知识库数据导入（生成 src/lib/agent/legacy/）
+│   └── demo-walkthrough.ts # 演示用例实测脚本（pnpm exec tsx scripts/demo-walkthrough.ts）
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx        # 主页：聊天界面 + 三种模式切换 + 双通道编排 + 可调宽调试栏
-│   │   ├── layout.tsx      # 根布局
-│   │   ├── globals.css     # Tailwind 4 + shadcn 语义 token（.dark 已定义，业务组件未启用）
+│   │   ├── layout.tsx      # 根布局（lang=zh-CN）
+│   │   ├── globals.css     # Tailwind 4 + shadcn 语义 token（.dark 已定义，业务组件已启用）
 │   │   └── api/agent/
-│   │       ├── fast/route.ts  # 快通道：SSE 流式（意图+状态决策+话术），精简 prompt
-│   │       ├── slow/route.ts  # 慢通道：非流式 JSON（情绪+实体抽取+护栏复核），完整 prompt
+│   │       ├── fast/route.ts  # 快通道：SSE 流式（意图+状态决策+话术），精简 prompt + 历史摘要
+│   │       ├── slow/route.ts  # 慢通道：非流式 JSON（情绪+实体抽取+护栏复核），完整 prompt + 历史摘要
 │   │       └── chat/route.ts  # 旧单通道 SSE 路由（2字符/25ms 节流），保留但前端未使用
 │   ├── components/
 │   │   ├── ui/             # shadcn/ui 组件库
-│   │   ├── chat/           # chat-area.tsx（消息流式渲染）/ chat-input.tsx（输入框）
+│   │   ├── chat/           # chat-area.tsx（消息流式渲染）/ chat-input.tsx（输入框 + 停止生成）
 │   │   ├── debug/          # debug-panel.tsx（状态机/槽位/决策路径/双通道状态）
 │   │   ├── layout/         # top-bar.tsx（通话信息栏）
 │   │   └── settings/       # model-settings-panel.tsx（模型参数配置）
@@ -39,12 +45,21 @@
 │   │   └── agent/          # Agent 核心引擎
 │   │       ├── types.ts        # 类型定义（状态/消息/槽位/决策/双通道状态）
 │   │       ├── knowledge-base.ts # 车辆知识库（品牌/车系/动力/车身模糊查询）
-│   │       ├── intent.ts       # 意图识别 + 实体抽取（规则引擎降级）
-│   │       ├── state-machine.ts # 对话状态机 + 模板话术生成
+│   │       ├── asr-corrections.ts # ASR 谐音/热词纠错（20 条规则，来自老系统热词词典）
+│   │       ├── intent.ts       # 意图识别 + 实体抽取（先 ASR 归一化，规则引擎降级）
+│   │       ├── state-machine.ts # 对话状态机 + 模板话术生成（已确认不回问、否定防误收集）
+│   │       ├── summary.ts      # 对话历史摘要 rolling summary（超阈值压缩注入）
 │   │       ├── cache.ts        # 固定话术轻量缓存（命中跳过 LLM）
 │   │       ├── prompt-builder.ts # 完整版 Prompt 构建（旧，仅 chat 路由用）
 │   │       ├── prompt-slim.ts    # 精简 Prompt：buildSlimPrompt / buildSlowPrompt / estimateTokens
-│   │       └── engine.ts        # 主引擎：双通道编排 + 降级 + 状态迁移校验 + 防竞态
+│   │       ├── engine.ts        # 主引擎：双通道编排 + 降级 + 状态迁移校验 + 防竞态 + idle 超时 + 护栏复核
+│   │       └── legacy/          # 老系统数据导入与能力（import-legacy.mjs 生成 + 手工模块）
+│   │           ├── legacy-types.ts      # 导入数据类型
+│   │           ├── main-flow.ts         # 15 子流程配置数据（生成）
+│   │           ├── knowledge-entries.ts # 21 条知识库配置（生成，按 priority 升序）
+│   │           ├── flow-alignment.ts    # 15 子流程 ↔ 7 状态映射表
+│   │           ├── matcher.ts           # 优先级匹配器（正则/包含、多答案轮次）
+│   │           └── special-tokens.ts    # AI_UNKNOWN/AI_UNKNOWN_END/USER_NOT_ANSWER 计数逻辑
 │   └── server.ts           # 自定义服务端入口（next dev，端口 5000）
 ├── next.config.ts
 └── package.json
@@ -131,5 +146,13 @@
 
 ## Notes
 
-- 近期主线（git log）：双通道流式 → 防竞态/降级/缓存 → 布局修复（flex `min-h-0`、去百分比高度链条、`h-dvh`）。
-- 已知遗留：流式读取阶段无 idle 超时（读循环挂起）；无"停止生成"交互；chat-input Enter 未检查 `e.nativeEvent.isComposing`（中文输入法误触）；多处按钮/输入框缺 aria-label；`<html lang="en">` 应为 `zh-CN`；业务组件未启用 `.dark` 语义 token。
+- 近期主线（git log）：双通道流式 → 防竞态/降级/缓存 → 布局修复（flex `min-h-0`、去百分比高度链条、`h-dvh`）→ 工程化（vitest 单测 117 例）→ 老系统数据导入（legacy/）→ 记忆强化（rolling summary、不回问、护栏复核）。
+- 已修复遗留：流式 idle 超时（3s，读循环不再挂起）；"停止生成"交互（AbortController 透出到 UI）；chat-input Enter 检查 `e.nativeEvent.isComposing`；补 aria-label；`<html lang="zh-CN">`；业务组件启用 .dark 语义 token（核心骨架）。
+- 已知遗留：流式读取阶段无 idle 超时（读循环挂起）→ 已修复；`<html lang="en">` → 已改 zh-CN；业务组件 .dark → 已启用。
+- 新增待办：`USER_NOT_ANSWER`/`AI_UNKNOWN` 的语音信号接入（平台侧，计数逻辑已实现于 `legacy/special-tokens.ts`）；老系统 21 条知识库全量切换进规则引擎（数据已导入 `legacy/knowledge-entries.ts`，当前仍用精简词表）；`<html lang>` 检查；调试面板可补充展示对话摘要与护栏复核结果。
+
+## Agent 架构说明（补充：记忆与老系统对齐）
+
+- 记忆机制：`summary.ts` 超阈值（12 条消息）生成早期对话摘要，经 engine → fast/slow route 注入 prompt（`【历史摘要】…勿重复询问`）；`state-machine.ts` 目标槽位已确认不回问、否定意图不收集实体（防误收集）。
+- 护栏复核：慢通道 `guardrail_check` 命中辱骂/反感时，`engine.ts` 强制 FAREWELL 并修正最近 agent 话术为退出话术。
+- 老系统对齐：`legacy/` 目录 = 导入数据（15 子流程、21 条知识库）+ 能力模块（flow-alignment 映射表、matcher 优先级匹配器、special-tokens 特殊令牌、asr-corrections 谐音纠错）。映射与对照见 `docs/对比分析-老系统流程vs范式.md`。
