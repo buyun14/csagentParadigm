@@ -63,6 +63,12 @@ export default function Home() {
   // 流式请求代次令牌：重置对话或新发送时递增，使所有进行中的回调失效，防止旧结果覆盖新状态
   const generationRef = useRef(0);
 
+  // 当前快通道流的 abort 句柄（“停止生成”使用）
+  const abortRef = useRef<(() => void) | null>(null);
+
+  // 用户主动停止标记：为 true 时 onError 只清理流，不触发降级到规则引擎
+  const stopRequestedRef = useRef(false);
+
   // 初始化模型配置
   useEffect(() => {
     const saved = loadModelConfig();
@@ -97,6 +103,8 @@ export default function Home() {
 
     // 递增代次令牌：新发送使上一轮进行中的流式回调失效
     const generation = ++generationRef.current;
+    stopRequestedRef.current = false;
+    abortRef.current = null;
     setAgentState((prev) => ({ ...prev, isProcessing: true }));
 
     // 规则引擎模式
@@ -143,7 +151,7 @@ export default function Home() {
       };
       slowResultRef.current = null;
 
-      const { customerMessage, agentMessageId } = processWithDualChannel(
+      const { customerMessage, agentMessageId, abort } = processWithDualChannel(
         currentState,
         message,
         modelConfig,
@@ -212,6 +220,18 @@ export default function Home() {
             },
             onError: () => {
               if (generationRef.current !== generation) return;
+              if (stopRequestedRef.current) {
+                // 用户主动停止：丢弃半截内容，清理占位消息，保持当前对话状态（不降级）
+                stopRequestedRef.current = false;
+                abortRef.current = null;
+                setAgentState((prev) => ({
+                  ...prev,
+                  isProcessing: false,
+                  messages: prev.messages.filter((m) => m.id !== agentMessageId),
+                }));
+                setStreamingMessageId(null);
+                return;
+              }
               // 快通道失败 → 降级到规则引擎
               const { newState } = fallbackToRuleEngine(currentState, message);
               setAgentState({ ...newState, responseSource: 'fallback' });
@@ -238,7 +258,8 @@ export default function Home() {
         }
       );
 
-      // 添加客户消息和空的 agent 消息到列表
+      // 保存 abort 句柄供“停止生成”按钮使用
+      abortRef.current = abort;
       const emptyAgentMessage: ChatMessage = {
         id: agentMessageId,
         role: 'agent',
@@ -255,9 +276,17 @@ export default function Home() {
     }
   }, [mode, modelConfig]);
 
+  // 停止生成：中止当前快通道流，丢弃未完成内容
+  const handleStop = useCallback(() => {
+    stopRequestedRef.current = true;
+    abortRef.current?.();
+  }, []);
+
   const handleReset = useCallback(() => {
     // 递增代次令牌，使进行中的流式回调失效，防止旧结果覆盖重置后的状态
     generationRef.current++;
+    stopRequestedRef.current = false;
+    abortRef.current = null;
     setAgentState(createInitialState());
     setStreamingMessageId(null);
   }, []);
@@ -272,7 +301,7 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="h-dvh flex flex-col bg-slate-50 overflow-hidden">
+    <div className="h-dvh flex flex-col bg-muted overflow-hidden">
       {/* Top Bar */}
       <TopBar
         onReset={handleReset}
@@ -281,7 +310,7 @@ export default function Home() {
       />
 
       {/* Mode Toggle Bar */}
-      <div className="flex items-center justify-between px-4 py-1.5 bg-white border-b border-slate-200">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-card border-b border-border">
         <div className="flex items-center gap-2">
           <ModeButton 
             active={mode === 'dual'} 
@@ -305,7 +334,7 @@ export default function Home() {
             activeClass="bg-amber-50 text-amber-700 border-amber-200"
           />
         </div>
-        <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
           <div className={cn(
             'w-1.5 h-1.5 rounded-full',
             mode === 'dual' && 'bg-blue-500',
@@ -329,14 +358,14 @@ export default function Home() {
         {/* Chat Area */}
         <div className="flex-1 flex flex-col bg-white min-w-0">
           {/* Chat header */}
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 bg-white">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-card">
             <div className="flex items-center gap-2">
               <div className="w-7 h-7 rounded-full bg-blue-500 flex items-center justify-center">
                 <span className="text-white text-xs font-medium">客</span>
               </div>
               <div>
-                <div className="text-sm font-medium text-slate-800">客户来电</div>
-                <div className="text-[10px] text-slate-400">
+                <div className="text-sm font-medium text-foreground">客户来电</div>
+                <div className="text-[10px] text-muted-foreground">
                   {agentState.currentState === 'FAREWELL' ? '通话已结束' : '通话中...'}
                 </div>
               </div>
@@ -345,7 +374,8 @@ export default function Home() {
               variant="ghost"
               size="icon"
               onClick={() => setShowDebug(!showDebug)}
-              className="h-8 w-8 text-slate-400 hover:text-slate-600"
+              aria-label={showDebug ? '隐藏调试面板' : '显示调试面板'}
+              className="h-8 w-8 text-muted-foreground hover:text-foreground"
               title={showDebug ? '隐藏调试面板' : '显示调试面板'}
             >
               {showDebug ? (
@@ -367,6 +397,8 @@ export default function Home() {
           <ChatInput
             onSend={handleSend}
             disabled={agentState.currentState === 'FAREWELL' || agentState.isProcessing}
+            isStreaming={!!streamingMessageId}
+            onStop={handleStop}
           />
         </div>
 
@@ -377,12 +409,12 @@ export default function Home() {
             <div
               className={cn(
                 'w-1 cursor-col-resize hover:bg-blue-400 transition-colors flex-shrink-0',
-                isResizing ? 'bg-blue-400' : 'bg-slate-200'
+                isResizing ? 'bg-blue-400' : 'bg-border'
               )}
               onMouseDown={handleMouseDown}
             />
             <div 
-              className="border-l border-slate-200 bg-white flex-shrink-0 overflow-hidden flex flex-col"
+              className="border-l border-border bg-card flex-shrink-0 overflow-hidden flex flex-col"
               style={{ width: panelWidth, maxWidth: 'min(60vw, 500px)' }}
             >
               {/* Model Settings */}
@@ -417,6 +449,7 @@ function ModeButton({ active, onClick, icon, label, activeClass }: {
   return (
     <button
       onClick={onClick}
+      aria-pressed={active}
       className={cn(
         'flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all duration-200',
         active

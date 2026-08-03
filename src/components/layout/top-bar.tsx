@@ -74,6 +74,7 @@ export function TopBar({ onReset, turnCount, isCallEnded }: TopBarProps) {
           variant="ghost"
           size="sm"
           onClick={onReset}
+          aria-label="重置对话"
           className="text-slate-300 hover:text-white hover:bg-slate-700 h-8 text-xs gap-1.5"
         >
           <PhoneOff className="h-3.5 w-3.5" />

@@ -66,7 +66,7 @@ function MessageBubble({ message, isStreaming }: { message: ChatMessage; isStrea
         className={cn(
           'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center',
           isAgent
-            ? 'bg-slate-100 text-slate-600'
+            ? 'bg-muted text-muted-foreground'
             : 'bg-blue-500 text-white'
         )}
       >
@@ -78,13 +78,13 @@ function MessageBubble({ message, isStreaming }: { message: ChatMessage; isStrea
         <div className={cn('flex items-center gap-1.5 mb-1 px-1', isAgent ? '' : 'flex-row-reverse')}>
           <span className={cn(
             'text-xs',
-            isAgent ? 'text-slate-400' : 'text-blue-400'
+            isAgent ? 'text-muted-foreground' : 'text-blue-400'
           )}>
             {isAgent ? '智能坐席' : '客户'}
           </span>
           {/* 延迟显示 */}
           {isAgent && message.latencyMs != null && (
-            <span className="flex items-center gap-0.5 text-[10px] text-slate-300 font-mono">
+            <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground/70 font-mono">
               <Clock className="h-2.5 w-2.5" />
               {message.latencyMs}ms
             </span>
@@ -94,7 +94,7 @@ function MessageBubble({ message, isStreaming }: { message: ChatMessage; isStrea
           className={cn(
             'px-3.5 py-2.5 text-sm leading-relaxed rounded-xl',
             isAgent
-              ? 'bg-slate-100 text-slate-800 rounded-tl-sm'
+              ? 'bg-muted text-foreground rounded-tl-sm'
               : 'bg-blue-500 text-white rounded-tr-sm'
           )}
         >

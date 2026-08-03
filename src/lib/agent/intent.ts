@@ -1,5 +1,6 @@
 import type { IntentType } from './types';
 import { resolveBrand, resolveType, resolvePower } from './knowledge-base';
+import { correctAsrText } from './asr-corrections';
 
 // 意图识别结果
 export interface IntentResult {
@@ -22,10 +23,10 @@ const agreeWords = [
   '考虑', '可以考虑', '有兴趣',
 ];
 
-// 否定词
+// 否定词（注意：单字“没”易误伤“有没有/有没有考虑”等疑问句，已移除，由“没有”等双字词覆盖）
 const disagreeWords = [
   '不要', '不用', '不需要', '不考虑', '算了', '不了', '别',
-  '没有', '没', '不想', '不需要', '不必', '暂不需要',
+  '没有', '不想', '不必', '暂不需要',
   '不买', '不买了',
 ];
 
@@ -143,24 +144,26 @@ const outOfScopePatterns = [
  * 意图识别
  */
 export function recognizeIntent(input: string): IntentResult {
-  const text = input.trim();
+  // 先做 ASR 谐音/热词归一化（未来→蔚来、一十八→ES8、毛豆歪→Model Y 等），
+  // 后续实体提取与意图判断都基于纠正后的文本
+  const text = correctAsrText(input).trim();
 
   // 空输入
   if (!text) {
     return { intent: 'unclear', entities: {}, confidence: 0 };
   }
 
-  // 1. 检查辱骂
-  for (const word of abuseWords) {
-    if (text.includes(word)) {
-      return { intent: 'abuse', entities: {}, confidence: 0.95 };
-    }
-  }
-
-  // 2. 检查反感
+  // 1. 检查反感（先于辱骂：投诉/举报/别打了等属于反感表达，应触发“理解并退出”而非“辱骂退出”）
   for (const word of dislikeWords) {
     if (text.includes(word)) {
       return { intent: 'dislike', entities: {}, confidence: 0.9 };
+    }
+  }
+
+  // 2. 检查辱骂
+  for (const word of abuseWords) {
+    if (text.includes(word)) {
+      return { intent: 'abuse', entities: {}, confidence: 0.95 };
     }
   }
 
@@ -228,7 +231,7 @@ export function recognizeIntent(input: string): IntentResult {
   if (phoneMatch) {
     entities.phoneTail = phoneMatch[1];
   }
-  const phoneMatch2 = text.match(/(尾号|后四位|后4位|末四位)\s*(\d{4})/);
+  const phoneMatch2 = text.match(/(尾号|后四位|后4位|末四位)\s*(?:是|为)?\s*(\d{4})/);
   if (phoneMatch2) {
     entities.phoneTail = phoneMatch2[2];
   }
@@ -288,19 +291,21 @@ export function recognizeIntent(input: string): IntentResult {
     }
   }
 
+  // 否定（先于肯定：否定句常含“考虑/好/行”等词，如“不考虑”，需优先拦截）
+  for (const word of disagreeWords) {
+    // “有没有…”是疑问句，其中的“没有”子串不是否定表达
+    if (word === '没有' && /有没有/.test(text)) continue;
+    if (text.includes(word)) {
+      return { intent: 'disagree', entities, confidence: 0.8 };
+    }
+  }
+
   // 肯定/同意
   if (text.length <= 8) {
     for (const word of agreeWords) {
       if (text === word || text.includes(word)) {
         return { intent: 'agree', entities, confidence: 0.8 };
       }
-    }
-  }
-
-  // 否定
-  for (const word of disagreeWords) {
-    if (text.includes(word)) {
-      return { intent: 'disagree', entities, confidence: 0.8 };
     }
   }
 

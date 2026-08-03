@@ -198,6 +198,16 @@ export function queryVehicleKB(params: QueryParams): QueryResult {
     };
   }
 
+  // 明确提供了品牌但知识库中不存在 → 返回带品牌名的友好提示
+  if (brand) {
+    return {
+      found: false,
+      brand,
+      results: [],
+      message: `抱歉，目前知识库中暂时没有${brand}的信息`,
+    };
+  }
+
   return { found: false, results: [], message: '请提供更多信息' };
 }
 
