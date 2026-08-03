@@ -13,6 +13,7 @@ import type {
 import { recognizeIntent } from './intent';
 import { generateResponse } from './state-machine';
 import { checkCache } from './cache';
+import { buildConversationSummary } from './summary';
 
 // 初始槽位状态
 const initialSlots: CollectedSlots = {
@@ -231,19 +232,23 @@ export function saveModelConfig(config: LLMModelConfig): void {
 
 /**
  * 快通道流式调用（SSE）
+ * @param controller 由调用方创建的外部 AbortController，供 UI 层“停止生成”使用
  */
 async function streamFastChannel(
   customerInput: string,
   currentState: AgentState,
   modelConfig: LLMModelConfig,
-  callbacks: FastStreamCallbacks
+  callbacks: FastStreamCallbacks,
+  controller: AbortController
 ): Promise<void> {
   try {
     const recentHistory = currentState.messages
       .slice(-8)
       .map((m) => ({ role: m.role, content: m.content }));
 
-    const controller = new AbortController();
+    // 超阈值时生成早期对话摘要，保证长对话上下文可延续（老系统缺失的“历史上下文”能力）
+    const summary = buildConversationSummary(currentState.messages, currentState.collectedSlots).text;
+
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const response = await fetch('/api/agent/fast', {
@@ -255,6 +260,7 @@ async function streamFastChannel(
         collected_slots: currentState.collectedSlots,
         recent_history: recentHistory,
         model_params: modelConfig,
+        summary,
       }),
       signal: controller.signal,
     });
@@ -278,9 +284,29 @@ async function streamFastChannel(
     const decoder = new TextDecoder();
     let buffer = '';
     let sawEvent = false;
+    // 流式读取 idle 超时：两次数据块之间超过阈值判定为连接挂起，避免读循环永久挂起
+    const IDLE_TIMEOUT_MS = 3000;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) => {
+            idleTimer = setTimeout(() => {
+              reject(new Error(`流式读取 idle 超时（${IDLE_TIMEOUT_MS}ms 无数据）`));
+            }, IDLE_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+          idleTimer = null;
+        }
+      }
+
+      const { done, value } = chunk;
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -346,6 +372,8 @@ async function callSlowChannel(
     const fullHistory = currentState.messages
       .map((m) => ({ role: m.role, content: m.content }));
 
+    const summary = buildConversationSummary(currentState.messages, currentState.collectedSlots).text;
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 16000);
 
@@ -359,6 +387,7 @@ async function callSlowChannel(
         fast_response: fastResponse,
         full_history: fullHistory,
         model_params: modelConfig,
+        summary,
       }),
       signal: controller.signal,
     });
@@ -417,6 +446,28 @@ function mapEmotionToException(emotion: string, intent: string): ExceptionState 
 }
 
 /**
+ * 护栏复核评估：解析慢通道 guardrail_check 文本，判定是否需要修正话术/状态。
+ * 慢通道从"分析器"升级为"复核纠错器"：检测到辱骂/反感等严重护栏命中时，
+ * 即使快通道已回复，也强制改为护栏退出话术并进入 FAREWELL。
+ */
+function evaluateGuardrail(
+  guardrailCheck: string
+): { exception: ExceptionState; forceFarewell: boolean } {
+  const g = (guardrailCheck || '').toLowerCase();
+  if (!g) return { exception: 'NONE', forceFarewell: false };
+  if (/辱骂|攻击|abuse/.test(g)) return { exception: 'ABUSE', forceFarewell: true };
+  if (/反感|骚扰|别打|dislike/.test(g)) return { exception: 'ABUSE', forceFarewell: true };
+  if (/偏离|off.?track/.test(g)) return { exception: 'OFF_TRACK', forceFarewell: false };
+  if (/超范围|out.of.scope/.test(g)) return { exception: 'OUT_OF_SCOPE', forceFarewell: false };
+  if (/不清|unclear/.test(g)) return { exception: 'UNCLEAR', forceFarewell: false };
+  return { exception: 'NONE', forceFarewell: false };
+}
+
+/** 护栏退出话术（与 cache.ts ANY:abuse/dislike 保持一致） */
+const GUARDRAIL_EXIT_REPLY =
+  '不好意思打扰了，祝您生活愉快，再见。';
+
+/**
  * 状态标签映射
  */
 export const stateLabels: Record<MainDialogState, string> = {
@@ -449,6 +500,8 @@ export function processWithDualChannel(
   customerMessage: ChatMessage;
   agentMessageId: string;
   sendTime: number;
+  /** 中止当前快通道流（用于“停止生成”交互） */
+  abort: () => void;
 } {
   const sendTime = Date.now();
   const customerMessage: ChatMessage = {
@@ -459,6 +512,9 @@ export function processWithDualChannel(
   };
 
   const agentMessageId = `msg-a-${sendTime}`;
+
+  // 外部可中止的 AbortController：快通道流式请求由其控制，UI 层“停止生成”时调用 abort
+  const controller = new AbortController();
 
   // 启动慢通道：等快通道产出回复后再启动，携带快通道回复供护栏复核
   const startSlowChannel = (fastResponse: string) => {
@@ -489,9 +545,9 @@ export function processWithDualChannel(
       startSlowChannel('');
       callbacks.fast.onError?.('快通道调用失败，已降级到规则引擎');
     },
-  });
+  }, controller);
 
-  return { customerMessage, agentMessageId, sendTime };
+  return { customerMessage, agentMessageId, sendTime, abort: () => controller.abort() };
 }
 
 /**
@@ -738,13 +794,31 @@ export function updateStateWithSlowChannel(
   // 更新槽位（如果慢通道提取到新实体）
   const updatedSlots = updateSlotsFromEntities(currentState.collectedSlots, normalizedEntities);
 
+  // 护栏复核联动：慢通道 guardrail_check 命中严重护栏（辱骂/反感）→ 强制 FAREWELL 并修正话术
+  const guardrail = evaluateGuardrail(slowResult.guardrail_check);
+
   // 信息闭环检测：姓氏 + 手机尾号均已收集且对话尚未结束 → 立即进入 FAREWELL，
   // 无需等下一轮用户输入（慢通道回填完成即闭环）
   const infoComplete = Boolean(updatedSlots.surname && updatedSlots.phoneTail);
-  const nextCurrentState: MainDialogState =
+  let nextCurrentState: MainDialogState =
     infoComplete && currentState.currentState !== 'FAREWELL'
       ? 'FAREWELL'
       : currentState.currentState;
+  if (guardrail.forceFarewell && nextCurrentState !== 'FAREWELL') {
+    nextCurrentState = 'FAREWELL';
+  }
+
+  // 护栏命中时修正话术：把最近一条 agent 消息替换为护栏退出话术（快通道话术作废）
+  let messages = currentState.messages;
+  if (guardrail.forceFarewell) {
+    const lastAgentIndex = [...messages].reverse().findIndex((m) => m.role === 'agent');
+    if (lastAgentIndex >= 0) {
+      const idx = messages.length - 1 - lastAgentIndex;
+      messages = messages.map((m, i) =>
+        i === idx ? { ...m, content: GUARDRAIL_EXIT_REPLY } : m
+      );
+    }
+  }
 
   // 更新决策路径
   const updatedDecision = currentState.lastDecision
@@ -774,8 +848,12 @@ export function updateStateWithSlowChannel(
     ...currentState,
     currentState: nextCurrentState,
     collectedSlots: updatedSlots,
+    messages,
     lastDecision: updatedDecision,
-    exceptionState: mapEmotionToException(slowResult.emotion, updatedDecision?.perception.intent || ''),
+    exceptionState:
+      guardrail.exception !== 'NONE'
+        ? guardrail.exception
+        : mapEmotionToException(slowResult.emotion, updatedDecision?.perception.intent || ''),
     dualChannel: updatedDualChannel,
   };
 }

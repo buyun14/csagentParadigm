@@ -19,28 +19,32 @@ const stateGoals: Record<MainDialogState, string> = {
 
 /**
  * 构建精简版 System Prompt（快通道用）
- * 特点：短角色设定 + 按需知识库 + 精简护栏
+ * 特点：短角色设定 + 按需知识库 + 精简护栏 + 可选历史摘要
  */
 export function buildSlimPrompt(
   currentState: MainDialogState,
   slots: CollectedSlots,
-  recentHistory: Array<{ role: string; content: string }>
+  recentHistory: Array<{ role: string; content: string }>,
+  summary?: string
 ): string {
   const kbSection = buildSlimKnowledgeSection(slots);
   const historySection = recentHistory.length > 0
     ? `\n【最近对话】\n${recentHistory.slice(-4).map(m => `${m.role === 'agent' ? '客服' : '客户'}: ${m.content}`).join('\n')}`
     : '';
+  const summarySection = summary ? `\n${summary}` : '';
 
   return `你是汽车营销中心电话客服。口语化、简短、自然。称呼"先生/女士"。
 
 【状态】${currentState}（${stateGoals[currentState]}）
 【已收集】品牌:${slots.brand || '无'}, 车系:${slots.series || '无'}, 城市:${slots.city || '无'}, 时间:${slots.timing || '无'}, 姓氏:${slots.surname || '无'}, 手机尾号:${slots.phoneTail || '无'}
-${kbSection}${historySection}
+${kbSection}${summarySection}${historySection}
 
 【规则】辱骂→道歉退出 | 反感→安抚退出 | 偏离→拉回 | 问价格→引导对接4S店 | 不清晰→追问 | 不编造车型 | 每次只问一个
 
 返回JSON:
 {"intent":"意图","next_state":"下一状态","response":"回复"}
+【intent 对应老系统的 hit 命中分支；无合适分支时用 off_track/unclear（老系统为 UNMATCH），严禁编造分支】
+【response 对应老系统的回答分支话术；未命中任何分支时用礼貌引导话术】
 
 【next_state 必须严格是以下之一】GREETING / BRAND_INQUIRY / MODEL_INQUIRY / CITY_INQUIRY / TIMING_INQUIRY / CONTACT_COLLECTION / FAREWELL（未收集到新信息时保持当前状态）。
 【intent 参考】greet / confirm_brand / confirm_model / confirm_city / confirm_time / confirm_surname / ask_price / out_of_scope / off_track / unclear / abuse / dislike / farewell。`;
@@ -135,16 +139,19 @@ export function buildSlowPrompt(
   state: MainDialogState,
   slots: CollectedSlots,
   history: Array<{ role: string; content: string }>,
-  fastResponse: string
+  fastResponse: string,
+  summary?: string
 ): string {
   const slotsText = formatSlots(slots);
   const kbSection = buildFullKnowledgeSection(slots);
   const historyText = history.slice(-12).map(m => `${m.role === 'agent' ? '客服' : '客户'}: ${m.content}`).join('\n');
+  const summarySection = summary ? `\n${summary}` : '';
 
   return `你是汽车营销中心客服。请深度分析以下对话。
 
 【状态】${state}
 【已收集】${slotsText}
+${summarySection}
 【对话历史】
 ${historyText}
 
@@ -153,9 +160,9 @@ ${kbSection}
 
 请分析：
 1. 客户情绪（neutral/interested/annoyed/angry）
-2. 提取所有实体（品牌/车系/城市/时间/姓氏/手机尾号/车型/动力类型）
+2. 提取所有实体（品牌/车系/城市/时间/姓氏/手机尾号/车型/动力类型/信息授权确认；键与老系统采集字段对应，未提及的字段留空）
 3. 决策推理过程（为什么这样回复）
-4. 护栏检查结果（是否触发辱骂/反感/偏离/超范围）
+4. 护栏检查结果（是否触发辱骂/反感/偏离/超范围；通过则输出 pass）
 
 返回JSON：
 {"emotion":"...","entities":{...},"reasoning":"...","guardrail_check":"..."}`;

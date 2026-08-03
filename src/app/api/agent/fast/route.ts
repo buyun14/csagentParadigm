@@ -17,16 +17,18 @@ export async function POST(request: NextRequest) {
       collected_slots,
       recent_history = [],
       model_params = {},
+      summary,
     } = body as {
       message: string;
       current_state: MainDialogState;
       collected_slots: CollectedSlots;
       recent_history?: Array<{ role: string; content: string }>;
       model_params?: LLMModelConfig;
+      summary?: string;
     };
 
-    // 构建精简版 prompt
-    const systemPrompt = buildSlimPrompt(current_state, collected_slots, recent_history);
+    // 构建精简版 prompt（含可选历史摘要）
+    const systemPrompt = buildSlimPrompt(current_state, collected_slots, recent_history, summary);
     const tokenEstimate = estimateTokens(systemPrompt);
 
     // 构建消息列表

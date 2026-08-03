@@ -18,6 +18,7 @@ export async function POST(request: NextRequest) {
       fast_response,
       full_history = [],
       model_params = {},
+      summary,
     } = body as {
       message: string;
       current_state: MainDialogState;
@@ -25,10 +26,11 @@ export async function POST(request: NextRequest) {
       fast_response: string;
       full_history?: Array<{ role: string; content: string }>;
       model_params?: LLMModelConfig;
+      summary?: string;
     };
 
-    // 构建完整 prompt
-    const systemPrompt = buildSlowPrompt(current_state, collected_slots, full_history, fast_response);
+    // 构建完整 prompt（含可选历史摘要）
+    const systemPrompt = buildSlowPrompt(current_state, collected_slots, full_history, fast_response, summary);
 
     // 构建消息列表
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
