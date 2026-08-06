@@ -23,6 +23,7 @@
 │   ├── start.mjs|.sh       # 生产启动
 │   ├── validate.mjs|.sh    # 校验（ts-check + lint）
 │   ├── import-legacy.mjs   # 老系统流程/知识库数据导入（生成 src/lib/agent/legacy/）
+│   ├── import-vehicle-brands.py # 车型库 xlsx → vehicle-brands.generated.ts（Python + openpyxl）
 │   └── demo-walkthrough.ts # 演示用例实测脚本（pnpm exec tsx scripts/demo-walkthrough.ts）
 ├── src/
 │   ├── app/
@@ -44,7 +45,8 @@
 │   │   ├── utils.ts        # cn()
 │   │   └── agent/          # Agent 核心引擎
 │   │       ├── types.ts        # 类型定义（状态/消息/槽位/决策/双通道状态）
-│   │       ├── knowledge-base.ts # 车辆知识库（品牌/车系/动力/车身模糊查询）
+│   │       ├── knowledge-base.ts # 车辆知识库（266 品牌/1951 车系，仅品牌+车系两级；无类型/动力/价格附加字段——防 LLM 过度询问）
+│   │       ├── vehicle-brands.generated.ts # 车型库生成数据（scripts/import-vehicle-brands.py 产出，勿手改）
 │   │       ├── asr-corrections.ts # ASR 谐音/热词纠错（20 条规则，来自老系统热词词典）
 │   │       ├── intent.ts       # 意图识别 + 实体抽取（先 ASR 归一化，规则引擎降级）
 │   │       ├── state-machine.ts # 对话状态机 + 模板话术生成（已确认不回问、否定防误收集）
@@ -121,7 +123,7 @@
 
 ### 双通道流程（`src/lib/agent/engine.ts` + `page.tsx`）
 1. 前端 `processWithDualChannel` 启动快通道（`/api/agent/fast`，SSE 流式，精简 prompt `buildSlimPrompt`，fetch 10s abort）；同时插入占位 agent 消息，逐 chunk 更新（打字机效果）。
-2. 快通道 `done` 事件 → `buildFinalStateFromFastChannel` 构建最终状态（next_state 经 `normalizeNextState` 非法回退 + `enforceStateTransition` 防倒退/按 intent 设推进下限/姓氏+手机尾号闭环强制 FAREWELL）。
+2. 快通道 `done` 事件 → `buildFinalStateFromFastChannel` 构建最终状态（next_state 经 `normalizeNextState` 非法回退 + `enforceStateTransition` 防倒退/按 intent 设推进下限/姓氏已收集即闭环强制 FAREWELL）。信息收集目标：品牌、车系、城市、看车时间、姓氏（手机尾号不收集，确认客户口头授权即可）。
 3. 快通道完成后启动慢通道（`/api/agent/slow`，非流式 JSON：emotion/entities/reasoning/guardrail_check，完整 prompt `buildSlowPrompt`，fetch 16s abort，携带 fast_response 供护栏复核）。
 4. 慢通道结果经 `slowResultRef` 缓存、`updateStateWithSlowChannel` 合并（槽位回填、情绪映射、闭环检测），避免被快通道整体覆盖。
 5. 降级：快通道失败/超时/非 SSE 响应 → `fallbackToRuleEngine`（`responseSource='fallback'`）；慢通道失败仅标记 `slowStatus='error'`，不影响主流程。
@@ -153,6 +155,6 @@
 
 ## Agent 架构说明（补充：记忆与老系统对齐）
 
-- 记忆机制：`summary.ts` 超阈值（12 条消息）生成早期对话摘要，经 engine → fast/slow route 注入 prompt（`【历史摘要】…勿重复询问`）；`state-machine.ts` 目标槽位已确认不回问、否定意图不收集实体（防误收集）。
+- 记忆机制：`summary.ts` 超阈值（12 条消息）生成早期对话摘要，经 engine → fast/slow route 注入 prompt（`【历史摘要】…勿重复询问`）；`state-machine.ts` 目标槽位已确认不回问、否定意图不收集实体（防误收集）。快通道 prompt（`buildSlimPrompt`）含提问纪律：按 品牌→车系→城市→看车时间→姓氏 顺序只问缺失的第一项、已收集字段绝不再问、不问动力类型/配置/价格（防止 LLM 过度询问）。
 - 护栏复核：慢通道 `guardrail_check` 命中辱骂/反感时，`engine.ts` 强制 FAREWELL 并修正最近 agent 话术为退出话术。
 - 老系统对齐：`legacy/` 目录 = 导入数据（15 子流程、21 条知识库）+ 能力模块（flow-alignment 映射表、matcher 优先级匹配器、special-tokens 特殊令牌、asr-corrections 谐音纠错）。映射与对照见 `docs/对比分析-老系统流程vs范式.md`。

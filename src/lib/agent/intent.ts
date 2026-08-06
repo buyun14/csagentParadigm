@@ -226,7 +226,7 @@ export function recognizeIntent(input: string): IntentResult {
     }
   }
 
-  // 提取手机尾号
+  // 手机尾号提取：仅被动兼容客户主动报尾号（信息闭环已不依赖 phoneTail，不主动收集）
   const phoneMatch = text.match(/(\d{4})\s*(尾号|后四位|后4位|末四位)/);
   if (phoneMatch) {
     entities.phoneTail = phoneMatch[1];
@@ -241,6 +241,8 @@ export function recognizeIntent(input: string): IntentResult {
   }
 
   // 提取车型（品牌+系列组合，如ES8、Model 3等）
+  // 注意：知识库已扩展到 266 品牌/1951 车系，但此处保持静态 5 品牌——
+  // 项目决策：知识库仅存品牌+车系数据，不做冗余匹配增强（避免误报与维护负担）
   const seriesPatterns: Record<string, string[]> = {
     '蔚来': ['ET5', 'ET7', 'ES6', 'ES7', 'ES8', 'EC6'],
     '比亚迪': ['汉', '秦', '宋', '唐', '海豚'],

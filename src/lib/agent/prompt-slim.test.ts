@@ -19,6 +19,13 @@ describe('prompt-slim 构建', () => {
     expect(p).toContain('品牌:蔚来');
     expect(p).toContain('车系:ES8');
     expect(p).toContain('蔚来'); // 知识库按当前品牌注入
+    // 提问纪律：最新消息已提信息视为已收集、只问缺失的下一项、不问动力类型
+    expect(p).toContain('视为已收集');
+    expect(p).toContain('动力类型');
+    // 称谓禁令：不猜测性别
+    expect(p).toContain('禁止输出"先生"');
+    // 车系已给出后不追问版本/变体
+    expect(p).toContain('车系已给出后不要追问版本/变体/偏好');
   });
 
   it('buildSlimPrompt 含老系统字段对齐说明（hit/UNMATCH）', () => {

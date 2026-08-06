@@ -19,6 +19,9 @@ import {
   getDefaultModelConfig,
   loadModelConfig,
   saveModelConfig,
+  loadDialogState,
+  saveDialogState,
+  clearDialogState,
 } from '@/lib/agent/engine';
 import type { SlowChannelResult } from '@/lib/agent/engine';
 import type { AgentState, AgentMode, ChatMessage, LLMModelConfig } from '@/lib/agent/types';
@@ -74,6 +77,33 @@ export default function Home() {
     const saved = loadModelConfig();
     setModelConfig(saved);
   }, []);
+
+  // 挂载后恢复会话状态（localStorage 读取必须在 useEffect 内，避免 hydration mismatch）
+  useEffect(() => {
+    const restored = loadDialogState();
+    if (restored) {
+      setAgentState((prev) => ({
+        ...prev,
+        ...restored,
+        // 调试类字段不持久化，恢复为初始值
+        isProcessing: false,
+        responseSource: 'rule',
+        latencyMetrics: null,
+        llmRawResponse: null,
+        dualChannel: null,
+        currentModelConfig: null,
+        promptTokenEstimate: null,
+      }));
+    }
+  }, []);
+
+  // 会话状态防抖持久化：流式期间每 chunk 都会更新状态，300ms 防抖避免频繁写 localStorage
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveDialogState(agentState);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [agentState]);
 
   // 处理面板宽度调整
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -287,6 +317,7 @@ export default function Home() {
     generationRef.current++;
     stopRequestedRef.current = false;
     abortRef.current = null;
+    clearDialogState();
     setAgentState(createInitialState());
     setStreamingMessageId(null);
   }, []);

@@ -103,7 +103,7 @@ const INTENT_MIN_STATE: Partial<Record<string, MainDialogState>> = {
   confirm_model: 'CITY_INQUIRY',
   confirm_city: 'TIMING_INQUIRY',
   confirm_time: 'CONTACT_COLLECTION',
-  // confirm_surname 只确认姓氏，联系方式（手机尾号）可能尚未收集，不直接闭环
+  // confirm_surname 确认姓氏（口头授权）→ 信息闭环由 infoComplete 统一推进 FAREWELL
   confirm_surname: 'CONTACT_COLLECTION',
   abuse: 'FAREWELL',
   dislike: 'FAREWELL',
@@ -112,7 +112,7 @@ const INTENT_MIN_STATE: Partial<Record<string, MainDialogState>> = {
 
 /**
  * 业务状态迁移校验（快通道 LLM 的 next_state 只是参考值）：
- * 1. 姓氏 + 手机尾号均已收集 → 信息闭环，强制 FAREWELL；
+ * 1. 姓氏已收集（确认口头授权）→ 信息闭环，强制 FAREWELL；
  * 2. intent 驱动的推进下限（confirm_* 至少推进到对应下一状态）；
  * 3. 不允许倒退到早于当前状态的位置；
  * 4. FAREWELL 为终态，不可回退（当前已是 FAREWELL 时保持）。
@@ -125,7 +125,8 @@ function enforceStateTransition(
   slots: CollectedSlots
 ): MainDialogState {
   const intentMin = INTENT_MIN_STATE[intent];
-  const infoComplete = Boolean(slots.surname && slots.phoneTail);
+  // 信息闭环：姓氏已收集（口头授权）即满足，手机尾号不再收集
+  const infoComplete = Boolean(slots.surname);
   const candidates = [
     STATE_ORDER[current],
     STATE_ORDER[rawNext],
@@ -225,6 +226,88 @@ export function saveModelConfig(config: LLMModelConfig): void {
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem('agent_model_config', JSON.stringify(config));
+  } catch {
+    // ignore
+  }
+}
+
+// 会话持久化 key（对话内容/状态机进度，刷新页面后恢复）
+const DIALOG_STATE_KEY = 'agent_dialog_state';
+
+/** 会话持久化字段（排除调试类字段：latencyMetrics/dualChannel/llmRawResponse 等） */
+export interface DialogPersistData {
+  currentState: MainDialogState;
+  exceptionState: ExceptionState;
+  collectedSlots: CollectedSlots;
+  messages: ChatMessage[];
+  turnCount: number;
+}
+
+/**
+ * 从 localStorage 恢复会话状态（无保存或解析失败返回 null）
+ */
+export function loadDialogState(): DialogPersistData | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const saved = localStorage.getItem(DIALOG_STATE_KEY);
+    if (!saved) return null;
+    const parsed = JSON.parse(saved) as Partial<DialogPersistData>;
+    if (!parsed || !Array.isArray(parsed.messages)) return null;
+    return {
+      currentState: parsed.currentState || 'GREETING',
+      exceptionState: parsed.exceptionState || 'NONE',
+      collectedSlots: { ...(parsed.collectedSlots as CollectedSlots) },
+      messages: (parsed.messages as ChatMessage[]).map((m) => ({
+        ...m,
+        // 恢复时清除流式标记，避免刷新后消息显示为"生成中"
+        isStreaming: false,
+      })),
+      turnCount: typeof parsed.turnCount === 'number' ? parsed.turnCount : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 保存会话状态到 localStorage（只持久化对话相关字段）
+ * - 过滤流式中的占位消息（isStreaming），避免刷新后恢复半截回复
+ * - 初始/重置状态不写入（等价清除），避免防抖保存绕过 clearDialogState
+ */
+export function saveDialogState(state: AgentState): void {
+  if (typeof window === 'undefined') return;
+  try {
+    // 重置后的初始状态不持久化（等价清除），保证 clearDialogState 语义不被防抖保存覆盖
+    const isInitialState =
+      state.turnCount === 0 &&
+      state.currentState === 'GREETING' &&
+      state.messages.length <= 1 &&
+      !state.messages.some((m) => m.role === 'customer');
+    if (isInitialState) {
+      localStorage.removeItem(DIALOG_STATE_KEY);
+      return;
+    }
+    const data: DialogPersistData = {
+      currentState: state.currentState,
+      exceptionState: state.exceptionState,
+      collectedSlots: state.collectedSlots,
+      // 流式占位消息（isStreaming）不持久化，刷新后丢弃半截内容
+      messages: state.messages.filter((m) => !m.isStreaming),
+      turnCount: state.turnCount,
+    };
+    localStorage.setItem(DIALOG_STATE_KEY, JSON.stringify(data));
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * 清除会话持久化（重置对话时调用）
+ */
+export function clearDialogState(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(DIALOG_STATE_KEY);
   } catch {
     // ignore
   }
@@ -694,6 +777,17 @@ export function processCustomerInput(
 }
 
 /**
+ * 清洗 LLM 回复中的性别称谓：'王先生/王女士' → '王您好'
+ * 项目规则：不猜测客户性别，一律称呼"您"（LLM 可能违反 prompt 禁令，此处硬兜底）
+ * 边界：仅替换句首/标点/语气词后的"姓氏+先生/女士"——覆盖"好的王先生"等口语粘连，
+ * 同时避免误伤"适合女士"这类动词短语
+ */
+export function sanitizeAgentReply(text: string): string {
+  // 语气词边界（的/好/嗯/是/对/啊/呀/啦/哈/行）可命中"好的王先生""嗯王先生"
+  return text.replace(/(^|[，。！？、；：\s,.;!?'"的好了嗯是对啊呀啦哈行])([\u4e00-\u9fff]{1,2})(先生|女士)/g, '$1$2您好');
+}
+
+/**
  * 根据快通道结果构建最终的 AgentState
  */
 export function buildFinalStateFromFastChannel(
@@ -704,7 +798,8 @@ export function buildFinalStateFromFastChannel(
   latencyData: { firstToken: number; total: number; tokenEstimate: number },
   modelConfig: LLMModelConfig
 ): AgentState {
-  // 校验 next_state，非法值（空/不存在/拼写错误）回退到当前状态
+  // 清洗性别称谓（"王先生"→"王您好"），保证话术不违反项目规则
+  const cleanContent = sanitizeAgentReply(agentMessageContent);
   const normalizedNext = normalizeNextState(parsedResponse.next_state, currentState.currentState);
   // 业务状态迁移校验：防倒退/防跳回，信息闭环时强制 FAREWELL
   const nextState = enforceStateTransition(
@@ -731,13 +826,13 @@ export function buildFinalStateFromFastChannel(
       nextState,
       action: 'LLM 快通道生成',
     },
-    output: agentMessageContent,
+    output: cleanContent,
   };
 
   const agentMessage: ChatMessage = {
     id: `msg-a-${customerMessage.timestamp}`,
     role: 'agent',
-    content: agentMessageContent,
+    content: cleanContent,
     timestamp: Date.now(),
     latencyMs: latencyData.total,
   };
@@ -797,9 +892,9 @@ export function updateStateWithSlowChannel(
   // 护栏复核联动：慢通道 guardrail_check 命中严重护栏（辱骂/反感）→ 强制 FAREWELL 并修正话术
   const guardrail = evaluateGuardrail(slowResult.guardrail_check);
 
-  // 信息闭环检测：姓氏 + 手机尾号均已收集且对话尚未结束 → 立即进入 FAREWELL，
+  // 信息闭环检测：姓氏已收集（确认口头授权）且对话尚未结束 → 立即进入 FAREWELL，
   // 无需等下一轮用户输入（慢通道回填完成即闭环）
-  const infoComplete = Boolean(updatedSlots.surname && updatedSlots.phoneTail);
+  const infoComplete = Boolean(updatedSlots.surname);
   let nextCurrentState: MainDialogState =
     infoComplete && currentState.currentState !== 'FAREWELL'
       ? 'FAREWELL'

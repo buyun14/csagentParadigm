@@ -1,5 +1,5 @@
 import type { MainDialogState, CollectedSlots } from '@/lib/agent/types';
-import { knowledgeBase, getBrandSeries } from './knowledge-base';
+import { knowledgeBase, resolveBrand } from './knowledge-base';
 
 // 状态对应的目标描述
 const stateGoals: Record<MainDialogState, string> = {
@@ -8,7 +8,7 @@ const stateGoals: Record<MainDialogState, string> = {
   MODEL_INQUIRY: '确认客户关注的具体车系/车型（可引导客户按类型筛选）',
   CITY_INQUIRY: '确认客户看车购车的城市',
   TIMING_INQUIRY: '确认客户的购车时间',
-  CONTACT_COLLECTION: '收集客户姓氏，确认联系方式',
+  CONTACT_COLLECTION: '收集姓氏，确认口头授权',
   FAREWELL: '对话已结束，礼貌告别',
 };
 
@@ -34,13 +34,13 @@ export function buildSystemPrompt(
   const kbSection = buildKnowledgeSection(slots);
 
   return `【角色设定】
-你是互联网汽车营销中心的电话客服坐席。你的工作是通过电话外呼，了解客户的购车意向，收集品牌、车系、城市、购车时间、联系方式等信息，最终将客户信息授权给当地四S店提供精准报价。
+你是互联网汽车营销中心的电话客服坐席。你的工作是通过电话外呼，了解客户的购车意向，收集品牌、车系、城市、购车时间、姓氏等信息（手机尾号不收集），确认客户口头授权后将客户信息授权给当地四S店提供精准报价。
 
 说话风格要求：
 - 自然口语化，像真人坐席，不要有机器人味
 - 适当使用语气词（嗯、哈、哎、吧、呀）
 - 回复简短，电话场景下不要太长（一般1-3句话）
-- 称呼客户为"先生"或"女士"（如果已知姓氏就用姓氏+先生/女士）
+- 统一称呼客户为"您"，不猜测客户性别，严禁使用"某先生/女士"（即使已知姓氏也不拼接性别称谓）
 - 不要使用书面语、列表格式或markdown
 
 【当前对话状态】
@@ -51,7 +51,6 @@ export function buildSystemPrompt(
   - 城市：${slots.city || '未收集'}
   - 购车时间：${slots.timing || '未收集'}
   - 客户姓氏：${slots.surname || '未收集'}
-  - 手机尾号：${slots.phoneTail || '未收集'}
 
 ${kbSection}
 
@@ -81,23 +80,16 @@ ${kbSection}
  */
 function buildKnowledgeSection(slots: CollectedSlots): string {
   if (slots.brand) {
-    const brandData = knowledgeBase.brands[slots.brand];
+    const brandData = knowledgeBase.brands[resolveBrand(slots.brand) || ''] || knowledgeBase.brands[slots.brand];
     if (brandData) {
-      const seriesList = Object.entries(brandData.series)
-        .map(([name, info]) => `  - ${name}: ${info.type} / ${info.power} / ${info.priceRange}`)
-        .join('\n');
+      const seriesList = Object.keys(brandData.series).join('、');
       return `【当前品牌知识库 - ${slots.brand}】
 ${seriesList}`;
     }
   }
 
-  // 没有确定品牌时，列出所有品牌概览
-  const brandOverview = Object.entries(knowledgeBase.brands)
-    .map(([name, data]) => {
-      const series = Object.keys(data.series);
-      return `  - ${name}: ${series.join('、')}`;
-    })
-    .join('\n');
+  // 没有确定品牌时，只列品牌名（全量车系会撑爆 context）
+  const brandOverview = Object.keys(knowledgeBase.brands).join('、');
 
   return `【可用品牌知识库概览】
 ${brandOverview}

@@ -108,11 +108,12 @@ describe('generateResponse 状态机', () => {
     expect(r.nextState).toBe('MODEL_INQUIRY');
   });
 
-  it('MODEL_INQUIRY + 类型筛选单结果 → 直接推进 CITY_INQUIRY', () => {
-    // 理想 + MPV 只有 MEGA 单结果 → 直接推进
+  it('MODEL_INQUIRY + 类型描述 → 列出全部车系并停留（筛选能力已随附加字段移除）', () => {
+    // 知识库仅品牌+车系，无类型字段：'有没有MPV' 不再筛选，列出品牌全部车系
     const r = run('有没有MPV', 'MODEL_INQUIRY', { ...emptySlots, brand: '理想' });
-    expect(r.nextState).toBe('CITY_INQUIRY');
-    expect(r.updatedSlots.series).toBe('MEGA');
+    expect(r.nextState).toBe('MODEL_INQUIRY');
+    expect(r.reply).toContain('理想');
+    expect(r.reply).toContain('L9'); // 全部车系中应包含 MPV 车型 MEGA 及其他
   });
 
   it('防误收集：否定意图中提到的品牌不入槽', () => {

@@ -263,28 +263,17 @@ export function generateResponse(
       reply = `${newSlots.series}可以的，想了解哪个城市的价格呢？在哪个城市看车购车方便呀？`;
       nextState = 'CITY_INQUIRY';
     } else if (intent === 'filter_vehicle' && newSlots.brand && (entities.vehicleType || entities.powerType)) {
-      reasoning = `客户按${entities.powerType || ''}${entities.vehicleType || ''}筛选${newSlots.brand}的车型`;
-      action = 'query_vehicle_kb → 展示筛选结果';
-      const kbResult = queryVehicleKB({
-        brand: newSlots.brand,
-        type: entities.vehicleType,
-        power: entities.powerType,
-      });
-      if (kbResult.found && kbResult.results.length > 0) {
-        const names = kbResult.results.map((r) => r.name);
-        if (names.length === 1) {
-          reply = `${entities.powerType || ''}${entities.vehicleType || ''}的话有${names[0]}，您看选这款可以吗？`;
-          newSlots.series = names[0];
-          nextState = 'CITY_INQUIRY';
-        } else {
-          reply = `${newSlots.brand}${entities.powerType || ''}${entities.vehicleType || ''}的有${names.join('、')}，您看选哪款呀？`;
-          nextState = 'MODEL_INQUIRY';
-        }
+      // 知识库仅品牌+车系（无类型/动力字段），类型描述不再筛选，列出品牌全部车系供选择
+      reasoning = `客户用${entities.powerType || ''}${entities.vehicleType || ''}描述需求，知识库无类型字段，列出${newSlots.brand}全部车系`;
+      action = 'query_vehicle_kb → 展示全部车系';
+      const kbResult = queryVehicleKB({ brand: newSlots.brand });
+      const names = (kbResult.found ? kbResult.results : []).map((r) => r.name);
+      if (names.length > 0) {
+        reply = `${newSlots.brand}的话，有${names.join('、')}，您看您想了解哪款车呢？`;
       } else {
-        const filterDesc = [entities.powerType, entities.vehicleType].filter(Boolean).join('且');
-        reply = `${newSlots.brand}现在没有${filterDesc}的，它只有${getBrandSeries(newSlots.brand).join('、')}这些，您看选哪款呢？`;
-        nextState = 'MODEL_INQUIRY';
+        reply = `好的，您关注${newSlots.brand}是吧，帮您查一下。您想了解哪款车呢？`;
       }
+      nextState = 'MODEL_INQUIRY';
     } else if (intent === 'ask_recommend') {
       reasoning = '客户请求推荐车型';
       action = '展示品牌车型列表';
@@ -454,7 +443,7 @@ export function generateResponse(
       const modelDesc = newSlots.series
         ? `${newSlots.series}${newSlots.city ? `在${newSlots.city}` : ''}`
         : '报价';
-      reply = `${title}先生${newSlots.series ? `，稍后报价，早日提爱车` : '，稍后会有专人联系您'}，再见。`;
+      reply = `${title}您好${newSlots.series ? `，稍后报价，早日提爱车` : '，稍后会有专人联系您'}，再见。`;
       nextState = 'FAREWELL';
     } else if (intent === 'out_of_scope') {
       reasoning = '客户问超范围问题';

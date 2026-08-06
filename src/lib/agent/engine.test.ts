@@ -5,6 +5,7 @@ import {
   updateStateWithSlowChannel,
   fallbackToRuleEngine,
   checkCacheHit,
+  sanitizeAgentReply,
 } from './engine';
 import type { ChatMessage, LLMModelConfig } from './types';
 
@@ -19,11 +20,36 @@ function fastPayload(intent: string, next_state: string, response = '好的') {
 }
 
 describe('engine 状态迁移校验', () => {
+  it('sanitizeAgentReply 清洗性别称谓（王先生/王女士 → 王您好）', () => {
+    expect(sanitizeAgentReply('好的，王先生，稍后联系您')).toBe('好的，王您好，稍后联系您');
+    expect(sanitizeAgentReply('李女士，您好')).toBe('李您好，您好');
+    expect(sanitizeAgentReply('感谢您的时间，再见')).toBe('感谢您的时间，再见');
+    // 边界：正常词不被误伤
+    expect(sanitizeAgentReply('这套方案适合女士')).toBe('这套方案适合女士');
+    // 句首称谓同样清洗
+    expect(sanitizeAgentReply('王先生，稍后联系您')).toBe('王您好，稍后联系您');
+    // 口语粘连（无标点）也能命中：好的王先生 / 嗯王先生
+    expect(sanitizeAgentReply('好的王先生，稍后联系您')).toBe('好的王您好，稍后联系您');
+    expect(sanitizeAgentReply('嗯王先生再见')).toBe('嗯王您好再见');
+  });
+
   it('createInitialState 初始为 GREETING 且含开场白', () => {
     const s = createInitialState();
     expect(s.currentState).toBe('GREETING');
     expect(s.messages[0].role).toBe('agent');
     expect(s.responseSource).toBe('rule');
+  });
+
+  it('快通道输出经称谓清洗：王先生 → 王您好', () => {
+    const init = createInitialState();
+    const r = buildFinalStateFromFastChannel(
+      init, customerMsg(), '好的，王先生，顾问稍后联系您', fastPayload('confirm_surname', 'CONTACT_COLLECTION'),
+      { firstToken: 100, total: 500, tokenEstimate: 200 }, modelConfig
+    );
+    const lastAgent = [...r.messages].reverse().find((m) => m.role === 'agent');
+    expect(lastAgent?.content).toBe('好的，王您好，顾问稍后联系您');
+    // 原始内容保留在 llmRawResponse 供调试
+    expect(r.llmRawResponse).toContain('王先生');
   });
 
   it('非法 next_state 回退到当前状态', () => {
@@ -62,14 +88,14 @@ describe('engine 状态迁移校验', () => {
     expect(r.currentState).toBe('MODEL_INQUIRY');
   });
 
-  it('姓氏+手机尾号闭环 → 强制 FAREWELL', () => {
-    // 构造已收集 姓氏+手机尾号 的状态
+  it('姓氏已收集（口头授权）→ 强制 FAREWELL', () => {
+    // 构造已收集姓氏、未收集手机尾号的状态（手机尾号不再要求）
     const init = createInitialState();
     const withSlots = {
       ...init,
       collectedSlots: {
         brand: '蔚来', series: 'ES8', model: null, city: '北京', timing: '下个月',
-        surname: '王', phoneTail: '1234', vehicleType: null, powerType: null,
+        surname: '王', phoneTail: null, vehicleType: null, powerType: null,
       },
       currentState: 'CONTACT_COLLECTION' as const,
     };
@@ -117,13 +143,35 @@ describe('updateStateWithSlowChannel 慢通道合并', () => {
     expect(updated.dualChannel?.slowStatus).toBe('done');
   });
 
-  it('慢通道回填完成闭环（姓氏+手机尾号）→ 直接 FAREWELL', () => {
+  it('慢通道回填姓氏完成闭环 → 直接 FAREWELL', () => {
+    // 姓氏尚未收集（手机尾号不再作为闭环条件），慢通道回填姓氏后闭环
     const init = {
       ...createInitialState(),
       currentState: 'CONTACT_COLLECTION' as const,
       collectedSlots: {
         brand: '蔚来', series: 'ES8', model: null, city: '北京', timing: '下个月',
-        surname: '王', phoneTail: null, vehicleType: null, powerType: null,
+        surname: null, phoneTail: null, vehicleType: null, powerType: null,
+      },
+    };
+    const slow = {
+      emotion: 'neutral',
+      entities: { 姓氏: '王' },
+      reasoning: '',
+      guardrail_check: '',
+    };
+    const updated = updateStateWithSlowChannel(init, slow, 300);
+    expect(updated.collectedSlots.surname).toBe('王');
+    expect(updated.currentState).toBe('FAREWELL');
+  });
+
+  it('仅回填手机尾号、无姓氏 → 不闭环（保持 CONTACT_COLLECTION）', () => {
+    // 手机尾号不再作为闭环条件：只回填尾号但无姓氏时不应进入 FAREWELL
+    const init = {
+      ...createInitialState(),
+      currentState: 'CONTACT_COLLECTION' as const,
+      collectedSlots: {
+        brand: '蔚来', series: 'ES8', model: null, city: '北京', timing: '下个月',
+        surname: null, phoneTail: null, vehicleType: null, powerType: null,
       },
     };
     const slow = {
@@ -134,7 +182,7 @@ describe('updateStateWithSlowChannel 慢通道合并', () => {
     };
     const updated = updateStateWithSlowChannel(init, slow, 300);
     expect(updated.collectedSlots.phoneTail).toBe('5678');
-    expect(updated.currentState).toBe('FAREWELL');
+    expect(updated.currentState).toBe('CONTACT_COLLECTION');
   });
 
   it('情绪映射 interested → positive', () => {

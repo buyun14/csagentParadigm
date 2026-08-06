@@ -1,53 +1,44 @@
-import type { KnowledgeBase, QueryParams, QueryResult } from './types';
+import type { KnowledgeBase, QueryParams, QueryResult, SeriesInfo } from './types';
+import { vehicleBrandSeries } from './vehicle-brands.generated';
+
+// 品牌归一化：xlsx 与命名不一致时合并为同一品牌（'理想汽车' 在 xlsx、'理想' 在手写表）
+const brandMerges: Record<string, string> = {
+  '理想汽车': '理想',
+};
+
+// 知识库最小实现：仅品牌+车系两级数据，无车身类型/动力/价格附加字段
+//（这些字段已从知识库移除——LLM 看到动力/价格信息会过度询问，如"看燃油版还是新能源"）
+const EMPTY_SERIES: SeriesInfo = { type: '未知', power: '未知', priceRange: '未知' };
+
+// 手写补充车系：xlsx 未收录的真实车系名（仅车系名，无附加字段）
+const manualSeries: Record<string, string[]> = {
+  '蔚来': ['ES7'],
+  '比亚迪': ['宋'],
+};
+
+// 合并 xlsx 车型库（vehicle-brands.generated.ts）与手写补充车系：
+// 品牌全集 = xlsx 品牌（含归一化合并）；车系名由生成脚本统一去品牌前缀
+function buildKnowledgeBase(): KnowledgeBase {
+  const brands: KnowledgeBase['brands'] = {};
+  for (const [rawBrand, seriesList] of Object.entries(vehicleBrandSeries)) {
+    const brand = brandMerges[rawBrand] || rawBrand;
+    const series: Record<string, SeriesInfo> = brands[brand]?.series || {};
+    for (const name of seriesList) {
+      series[name] = EMPTY_SERIES;
+    }
+    brands[brand] = { series };
+  }
+  for (const [brand, seriesList] of Object.entries(manualSeries)) {
+    const series: Record<string, SeriesInfo> = (brands[brand] = brands[brand] || { series: {} }).series;
+    for (const name of seriesList) {
+      series[name] = EMPTY_SERIES;
+    }
+  }
+  return { brands };
+}
 
 // 车辆知识库数据
-export const knowledgeBase: KnowledgeBase = {
-  brands: {
-    '蔚来': {
-      series: {
-        'ET5': { type: '轿车', power: '纯电', priceRange: '25-30万' },
-        'ET7': { type: '轿车', power: '纯电', priceRange: '40-50万' },
-        'ES6': { type: 'SUV', power: '纯电', priceRange: '30-40万' },
-        'ES7': { type: 'SUV', power: '纯电', priceRange: '40-50万' },
-        'ES8': { type: 'SUV', power: '纯电', priceRange: '50-60万' },
-        'EC6': { type: 'SUV', power: '纯电', priceRange: '35-45万' },
-      },
-    },
-    '比亚迪': {
-      series: {
-        '汉': { type: '轿车', power: '混动/纯电', priceRange: '20-30万' },
-        '秦': { type: '轿车', power: '混动/纯电', priceRange: '10-15万' },
-        '宋': { type: 'SUV', power: '混动/纯电', priceRange: '15-20万' },
-        '唐': { type: 'SUV', power: '混动/纯电', priceRange: '25-35万' },
-        '海豚': { type: '轿车', power: '纯电', priceRange: '10-13万' },
-      },
-    },
-    '理想': {
-      series: {
-        'L7': { type: 'SUV', power: '增程', priceRange: '30-35万' },
-        'L8': { type: 'SUV', power: '增程', priceRange: '35-40万' },
-        'L9': { type: 'SUV', power: '增程', priceRange: '45-50万' },
-        'MEGA': { type: 'MPV', power: '纯电', priceRange: '55-60万' },
-      },
-    },
-    '特斯拉': {
-      series: {
-        'Model 3': { type: '轿车', power: '纯电', priceRange: '23-30万' },
-        'Model Y': { type: 'SUV', power: '纯电', priceRange: '26-35万' },
-        'Model S': { type: '轿车', power: '纯电', priceRange: '70-100万' },
-        'Model X': { type: 'SUV', power: '纯电', priceRange: '80-100万' },
-      },
-    },
-    '小鹏': {
-      series: {
-        'P7': { type: '轿车', power: '纯电', priceRange: '20-30万' },
-        'G6': { type: 'SUV', power: '纯电', priceRange: '20-25万' },
-        'G9': { type: 'SUV', power: '纯电', priceRange: '30-40万' },
-        'X9': { type: 'MPV', power: '纯电', priceRange: '35-40万' },
-      },
-    },
-  },
-};
+export const knowledgeBase: KnowledgeBase = buildKnowledgeBase();
 
 // 品牌别名映射
 const brandAliases: Record<string, string> = {
@@ -100,10 +91,11 @@ const powerAliases: Record<string, string> = {
 };
 
 /**
- * 查询知识库
+ * 查询知识库（最小实现：仅品牌→车系两级，无类型/动力/价格筛选）
+ * type/power 参数保留兼容调用方，但知识库已无附加字段，筛选不再生效
  */
 export function queryVehicleKB(params: QueryParams): QueryResult {
-  const { brand, type, power } = params;
+  const { brand } = params;
 
   // 解析品牌名
   const resolvedBrand = resolveBrand(brand || '');
@@ -119,82 +111,17 @@ export function queryVehicleKB(params: QueryParams): QueryResult {
       };
     }
 
-    let seriesList = Object.entries(brandData.series).map(([name, info]) => ({
+    const seriesList = Object.entries(brandData.series).map(([name, info]) => ({
       name,
       type: info.type,
       power: info.power,
       priceRange: info.priceRange,
     }));
 
-    // 按车身类型筛选
-    if (type) {
-      const resolvedType = resolveType(type);
-      if (resolvedType) {
-        seriesList = seriesList.filter((s) => s.type === resolvedType);
-      }
-    }
-
-    // 按动力类型筛选
-    if (power) {
-      const resolvedPower = resolvePower(power);
-      if (resolvedPower) {
-        seriesList = seriesList.filter((s) =>
-          s.power.includes(resolvedPower)
-        );
-      }
-    }
-
-    if (seriesList.length === 0) {
-      const filters: string[] = [];
-      if (type) filters.push(resolveType(type) || type);
-      if (power) filters.push(resolvePower(power) || power);
-      return {
-        found: false,
-        brand: resolvedBrand,
-        results: [],
-        message: `${resolvedBrand}目前没有${filters.join('且')}的车型`,
-      };
-    }
-
     return {
       found: true,
       brand: resolvedBrand,
       results: seriesList,
-    };
-  }
-
-  // 没有品牌，按类型/动力全局搜索
-  if (type || power) {
-    const results: QueryResult['results'] = [];
-    const resolvedType = type ? resolveType(type) : undefined;
-    const resolvedPower = power ? resolvePower(power) : undefined;
-
-    for (const [brandName, brandData] of Object.entries(
-      knowledgeBase.brands
-    )) {
-      for (const [seriesName, info] of Object.entries(brandData.series)) {
-        let match = true;
-        if (resolvedType && info.type !== resolvedType) match = false;
-        if (resolvedPower && !info.power.includes(resolvedPower))
-          match = false;
-        if (match) {
-          results.push({
-            name: `${brandName} ${seriesName}`,
-            type: info.type,
-            power: info.power,
-            priceRange: info.priceRange,
-          });
-        }
-      }
-    }
-
-    return {
-      found: results.length > 0,
-      results,
-      message:
-        results.length > 0
-          ? undefined
-          : '没有找到符合条件的车型',
     };
   }
 

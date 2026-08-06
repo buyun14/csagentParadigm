@@ -1,9 +1,9 @@
 import type { MainDialogState, CollectedSlots } from '@/lib/agent/types';
-import { knowledgeBase } from './knowledge-base';
+import { knowledgeBase, resolveBrand } from './knowledge-base';
 
 // 格式化槽位信息
 function formatSlots(slots: CollectedSlots): string {
-  return `品牌:${slots.brand || '无'}, 车系:${slots.series || '无'}, 城市:${slots.city || '无'}, 时间:${slots.timing || '无'}, 姓氏:${slots.surname || '无'}, 手机尾号:${slots.phoneTail || '无'}`;
+  return `品牌:${slots.brand || '无'}, 车系:${slots.series || '无'}, 城市:${slots.city || '无'}, 时间:${slots.timing || '无'}, 姓氏:${slots.surname || '无'}`;
 }
 
 // 状态目标（精简版）
@@ -33,23 +33,30 @@ export function buildSlimPrompt(
     : '';
   const summarySection = summary ? `\n${summary}` : '';
 
-  return `你是汽车营销中心电话客服。口语化、简短、自然。称呼"先生/女士"。
+  return `你是汽车营销中心电话客服。口语化、简短、自然。严禁输出"某先生""某女士"称谓，统一称呼客户为"您"。
 
 【状态】${currentState}（${stateGoals[currentState]}）
-【已收集】品牌:${slots.brand || '无'}, 车系:${slots.series || '无'}, 城市:${slots.city || '无'}, 时间:${slots.timing || '无'}, 姓氏:${slots.surname || '无'}, 手机尾号:${slots.phoneTail || '无'}
+【已收集】品牌:${slots.brand || '无'}, 车系:${slots.series || '无'}, 城市:${slots.city || '无'}, 时间:${slots.timing || '无'}, 姓氏:${slots.surname || '无'}
 ${kbSection}${summarySection}${historySection}
 
-【规则】辱骂→道歉退出 | 反感→安抚退出 | 偏离→拉回 | 问价格→引导对接4S店 | 不清晰→追问 | 不编造车型 | 每次只问一个
+【规则】
+- 收集目标仅：品牌、车系、城市、看车时间、姓氏。
+- 客户最新消息中已提到的品牌/车系/城市/时间/姓氏视为已收集，绝不再问（如客户说"帕萨特"即视为车系已收集）
+- 收集顺序：品牌→车系→城市→看车时间→姓氏。只问第一个缺失项；车系已给出后不要追问版本/变体/偏好
+- 每轮最多问一个问题；客户已回答过的信息不要重复确认
+
+- 辱骂→道歉退出 | 反感→安抚退出 | 偏离→拉回 | 问价格→引导对接4S店 | 不清晰→追问 | 不编造车型
 
 返回JSON:
 {"intent":"意图","next_state":"下一状态","response":"回复"}
-【intent 对应老系统的 hit 命中分支；无合适分支时用 off_track/unclear（老系统为 UNMATCH），严禁编造分支】
-【response 对应老系统的回答分支话术；未命中任何分支时用礼貌引导话术】
 
 【next_state 必须严格是以下之一】GREETING / BRAND_INQUIRY / MODEL_INQUIRY / CITY_INQUIRY / TIMING_INQUIRY / CONTACT_COLLECTION / FAREWELL（未收集到新信息时保持当前状态）。
 【intent 参考】greet / confirm_brand / confirm_model / confirm_city / confirm_time / confirm_surname / ask_price / out_of_scope / off_track / unclear / abuse / dislike / farewell。`;
 }
-
+//【intent 对应老系统的 hit 命中分支；无合适分支时用 off_track/unclear（老系统为 UNMATCH），严禁编造分支】
+//【response 对应老系统的回答分支话术；未命中任何分支时用礼貌引导话术】
+//- 严禁输出"某先生""某女士"称谓，一律称呼"您"
+// 手机尾号/动力类型（燃油、新能源）/配置/价格一律不问
 /**
  * 构建完整版 System Prompt（慢通道用）
  */
@@ -63,9 +70,9 @@ export function buildFullPrompt(
     ? `\n【对话历史】\n${fullHistory.map(m => `${m.role === 'agent' ? '客服' : '客户'}: ${m.content}`).join('\n')}`
     : '';
 
-  return `你是互联网汽车营销中心的电话客服坐席。通过外呼了解客户购车意向，收集信息后授权给当地4S店报价。
+  return `你是互联网汽车营销中心的电话客服坐席。通过外呼了解客户购车意向，收集品牌、车系、城市、看车时间与姓氏即可（手机尾号不收集），确认客户口头授权后将信息授权给当地4S店报价。
 
-说话风格：自然口语化，像真人坐席，适当用语气词（嗯、哈、吧、呀），回复简短（1-3句），称呼"先生/女士"。
+说话风格：自然口语化，像真人坐席，适当用语气词（嗯、哈、吧、呀），回复简短（1-3句），统一称呼客户为"您"，不猜测客户性别，不使用"先生/女士"。
 
 【当前状态】${currentState}（${stateGoals[currentState]}）
 【已收集信息】
@@ -74,7 +81,6 @@ export function buildFullPrompt(
 - 城市：${slots.city || '未收集'}
 - 购车时间：${slots.timing || '未收集'}
 - 客户姓氏：${slots.surname || '未收集'}
-- 手机尾号：${slots.phoneTail || '未收集'}
 ${kbSection}${historySection}
 
 【护栏规则】
@@ -84,7 +90,7 @@ ${kbSection}${historySection}
 4. 问价格/优惠/配置 → "具体价格帮您对接当地4S店精准报价"
 5. 输入不清晰 → 礼貌澄清
 6. 不编造知识库没有的车型
-7. 不一次问多个问题
+7. 不一次问多个问题；收集目标仅品牌/车系/城市/购车时间/姓氏（不问手机尾号、动力类型），按顺序只问缺失的第一项，已收集的不再问
 
 返回JSON:
 {"emotion":"neutral/interested/annoyed/angry","entities":{...},"reasoning":"决策理由","guardrail_check":"护栏检查结果"}`;
@@ -93,11 +99,9 @@ ${kbSection}${historySection}
 // 精简版知识库（只注入当前品牌）
 function buildSlimKnowledgeSection(slots: CollectedSlots): string {
   if (slots.brand) {
-    const brandData = knowledgeBase.brands[slots.brand];
+    const brandData = knowledgeBase.brands[resolveBrand(slots.brand) || ''] || knowledgeBase.brands[slots.brand];
     if (brandData) {
-      const series = Object.entries(brandData.series)
-        .map(([name, info]) => `${name}(${info.type}/${info.power})`)
-        .join(',');
+      const series = Object.keys(brandData.series).join('、');
       return `\n【${slots.brand}】${series}`;
     }
   }
@@ -109,18 +113,15 @@ function buildSlimKnowledgeSection(slots: CollectedSlots): string {
 // 完整版知识库
 function buildFullKnowledgeSection(slots: CollectedSlots): string {
   if (slots.brand) {
-    const brandData = knowledgeBase.brands[slots.brand];
+    const brandData = knowledgeBase.brands[resolveBrand(slots.brand) || ''] || knowledgeBase.brands[slots.brand];
     if (brandData) {
-      const seriesList = Object.entries(brandData.series)
-        .map(([name, info]) => `  - ${name}: ${info.type} / ${info.power} / ${info.priceRange}`)
-        .join('\n');
+      const seriesList = Object.keys(brandData.series).join('、');
       return `\n【知识库 - ${slots.brand}】\n${seriesList}`;
     }
   }
-  const overview = Object.entries(knowledgeBase.brands)
-    .map(([name, data]) => `  - ${name}: ${Object.keys(data.series).join('、')}`)
-    .join('\n');
-  return `\n【知识库概览】\n${overview}`;
+  // 没有确定品牌时只列品牌名（全量车系会撑爆 context）
+  const brandNames = Object.keys(knowledgeBase.brands).join('、');
+  return `\n【可用品牌】${brandNames}`;
 }
 
 /**
@@ -160,7 +161,7 @@ ${kbSection}
 
 请分析：
 1. 客户情绪（neutral/interested/annoyed/angry）
-2. 提取所有实体（品牌/车系/城市/时间/姓氏/手机尾号/车型/动力类型/信息授权确认；键与老系统采集字段对应，未提及的字段留空）
+2. 提取所有实体（品牌/车系/城市/时间/姓氏/车型/动力类型/信息授权确认；键与老系统采集字段对应，未提及的字段留空）
 3. 决策推理过程（为什么这样回复）
 4. 护栏检查结果（是否触发辱骂/反感/偏离/超范围；通过则输出 pass）
 

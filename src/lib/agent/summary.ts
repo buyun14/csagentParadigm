@@ -46,7 +46,6 @@ export function buildConversationSummary(
     slots.city && `城市:${slots.city}`,
     slots.timing && `购车时间:${slots.timing}`,
     slots.surname && `姓氏:${slots.surname}`,
-    slots.phoneTail && `手机尾号:${slots.phoneTail}`,
   ].filter(Boolean) as string[];
   const confirmed = confirmedParts.length > 0 ? confirmedParts.join('、') : '暂无';
 
