@@ -1,5 +1,5 @@
 import type { MainDialogState, ExceptionState, CollectedSlots } from './types';
-import { queryVehicleKB, getBrandSeries, knowledgeBase } from './knowledge-base';
+import { queryVehicleKB, getBrandSeries, resolveBrandFromSeries } from './knowledge-base';
 import type { IntentResult } from './intent';
 
 // Agent 回复生成结果
@@ -131,13 +131,8 @@ export function generateResponse(
     if (entities.series) {
       newSlots.series = entities.series;
       if (!newSlots.brand) {
-        // 从车型推断品牌
-        for (const [brandName, brandData] of Object.entries(knowledgeBase.brands)) {
-          if (Object.keys(brandData.series).includes(entities.series)) {
-            newSlots.brand = brandName;
-            break;
-          }
-        }
+        // 从车型推断品牌（统一走知识库反推，支持"汉DM-i"等变体）
+        newSlots.brand = resolveBrandFromSeries(entities.series);
       }
     }
     if (entities.city) newSlots.city = entities.city;

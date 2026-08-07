@@ -495,7 +495,7 @@ function ModeButton({ active, onClick, icon, label, activeClass }: {
 }
 
 // 解析快通道返回的 JSON
-function parseFastResponse(content: string, currentState: string): { intent: string; next_state: string; response: string } | null {
+function parseFastResponse(content: string, currentState: string): { intent: string; next_state: string; response: string; entities?: Record<string, string> } | null {
   try {
     let cleaned = content.trim();
     const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
@@ -508,10 +508,16 @@ function parseFastResponse(content: string, currentState: string): { intent: str
     const parsed = JSON.parse(cleaned);
     // response 存在即可用；next_state 缺失/非法时回退到当前状态（由 engine 校验兜底）
     if (typeof parsed.response === 'string') {
+      // 快通道实体（中文键，如"品牌/车系/城市"）；LLM 可能省略或给非法类型，需防御
+      const entities =
+        typeof parsed.entities === 'object' && parsed.entities !== null && !Array.isArray(parsed.entities)
+          ? (parsed.entities as Record<string, string>)
+          : undefined;
       return {
         intent: parsed.intent || 'unknown',
         next_state: typeof parsed.next_state === 'string' ? parsed.next_state : currentState,
         response: parsed.response,
+        ...(entities ? { entities } : {}),
       };
     }
   } catch {

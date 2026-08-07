@@ -19,20 +19,24 @@ describe('prompt-slim 构建', () => {
     expect(p).toContain('品牌:蔚来');
     expect(p).toContain('车系:ES8');
     expect(p).toContain('蔚来'); // 知识库按当前品牌注入
-    // 提问纪律：最新消息已提信息视为已收集、只问缺失的下一项、不问动力类型
+    // 提问纪律：最新消息已提信息视为已收集、只问缺失的下一项、收集目标仅 5 项
     expect(p).toContain('视为已收集');
-    expect(p).toContain('动力类型');
+    expect(p).toContain('收集目标仅');
     // 称谓禁令：不猜测性别
-    expect(p).toContain('禁止输出"先生"');
+    expect(p).toContain('严禁输出"某先生"');
     // 车系已给出后不追问版本/变体
     expect(p).toContain('车系已给出后不要追问版本/变体/偏好');
   });
 
-  it('buildSlimPrompt 含老系统字段对齐说明（hit/UNMATCH）', () => {
+  it('buildSlimPrompt 要求返回 entities（快通道即时回填槽位/品牌反推）', () => {
     const p = buildSlimPrompt('MODEL_INQUIRY', slots, history);
-    expect(p).toContain('hit');
-    expect(p).toContain('UNMATCH');
-    expect(p).toContain('严禁编造');
+    // 返回 JSON 含 entities 字段（中文键），供快通道完成后即时回填槽位
+    expect(p).toContain('"entities"');
+    expect(p).toContain('品牌":"","车系"');
+    // 只给车系未给品牌时，可从知识库推断补全（如汉→比亚迪）
+    expect(p).toContain('品牌可从知识库推断补全');
+    // 称谓禁令保留
+    expect(p).toContain('严禁输出');
   });
 
   it('buildSlimPrompt 注入历史摘要（可选参数）', () => {

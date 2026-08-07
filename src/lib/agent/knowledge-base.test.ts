@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { queryVehicleKB, resolveBrand, resolveType, resolvePower, getBrandSeries, getAllBrands } from './knowledge-base';
+import { queryVehicleKB, resolveBrand, resolveType, resolvePower, getBrandSeries, getAllBrands, resolveBrandFromSeries } from './knowledge-base';
 
 describe('knowledge-base 知识库查询', () => {
   it('品牌精确匹配', () => {
@@ -86,5 +86,34 @@ describe('knowledge-base 知识库查询', () => {
     const r = queryVehicleKB({});
     expect(r.found).toBe(false);
     expect(r.message).toContain('更多信息');
+  });
+});
+
+describe('resolveBrandFromSeries 车系反推品牌', () => {
+  it('精确匹配（知识库车系名，品牌唯一）', () => {
+    expect(resolveBrandFromSeries('汉')).toBe('比亚迪');
+    expect(resolveBrandFromSeries('Model 3')).toBe('特斯拉');
+    expect(resolveBrandFromSeries('ES7')).toBe('蔚来');
+  });
+
+  it('客户车系名包含知识库车系名（变体匹配，如 汉DM-i → 比亚迪）', () => {
+    expect(resolveBrandFromSeries('汉DM-i')).toBe('比亚迪');
+    expect(resolveBrandFromSeries('Model 3 Performance')).toBe('特斯拉');
+  });
+
+  it('知识库车系名包含客户车系名（如 Model → 特斯拉 Model 3）', () => {
+    expect(resolveBrandFromSeries('Model')).toBe('特斯拉');
+  });
+
+  it('同名车系跨品牌（ES8 星途/蔚来、海狮 金旅/金杯）→ 歧义不反推，返回 null', () => {
+    // 宁可品牌不点亮，也不错误归属：ES8 在星途与蔚来都有精确车系
+    expect(resolveBrandFromSeries('ES8')).toBeNull();
+    expect(resolveBrandFromSeries('海狮')).toBeNull();
+  });
+
+  it('未命中/空输入返回 null', () => {
+    expect(resolveBrandFromSeries('不存在的车系XYZ')).toBeNull();
+    expect(resolveBrandFromSeries('')).toBeNull();
+    expect(resolveBrandFromSeries('  ')).toBeNull();
   });
 });

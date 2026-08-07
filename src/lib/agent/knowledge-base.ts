@@ -214,6 +214,52 @@ export function getBrandSeries(brand: string): string[] {
 }
 
 /**
+ * 从车系名反推品牌（支持 LLM/规则引擎给出的车系变体，如"汉DM-i"→"比亚迪"）
+ * 匹配优先级：
+ * 1. 精确匹配（车系名 == 知识库车系名）
+ * 2. 客户车系名包含知识库车系名（"汉DM-i" 包含 "汉"；单字车系名仅在客户名以其开头时命中）
+ * 3. 知识库车系名包含客户车系名（"Model" 是 "Model 3" 的子串；车系名至少 2 字符）
+ * 安全契约：同名车系跨品牌（如 ES8=星途/蔚来、海狮=金旅/金杯）视为歧义，返回 null
+ * ——宁可品牌不点亮，也不错误归属到第一个遍历到的品牌。
+ */
+export function resolveBrandFromSeries(series: string): string | null {
+  const s = (series || '').trim();
+  if (!s) return null;
+
+  // 1) 精确匹配：收集所有命中品牌，唯一才返回
+  const exactBrands = new Set<string>();
+  for (const [brand, brandData] of Object.entries(knowledgeBase.brands)) {
+    if (Object.prototype.hasOwnProperty.call(brandData.series, s)) exactBrands.add(brand);
+  }
+  if (exactBrands.size === 1) return [...exactBrands][0];
+  if (exactBrands.size > 1) return null;
+
+  // 2) 客户车系名包含知识库车系名（如 "汉DM-i" → 比亚迪"汉"）：
+  //    车系名 ≥2 字符可被任意包含；单字车系名（如"汉"）仅当客户名以其开头（"汉DM-i"）时可信，
+  //    避免"不存在的车系XYZ"这类长串误命中单字车系名（如林肯"Z"）
+  const extendBrands = new Set<string>();
+  for (const [brand, brandData] of Object.entries(knowledgeBase.brands)) {
+    for (const name of Object.keys(brandData.series)) {
+      const prefixHit = s.startsWith(name);
+      const containHit = s.includes(name) && name.length >= 2;
+      if (prefixHit || containHit) extendBrands.add(brand);
+    }
+  }
+  if (extendBrands.size === 1) return [...extendBrands][0];
+  if (extendBrands.size > 1) return null;
+
+  // 3) 知识库车系名包含客户车系名（如 "Model" → 特斯拉 "Model 3"）：车系名至少 2 字符，唯一品牌才返回
+  const reverseBrands = new Set<string>();
+  for (const [brand, brandData] of Object.entries(knowledgeBase.brands)) {
+    for (const name of Object.keys(brandData.series)) {
+      if (name.length >= 2 && name.includes(s)) reverseBrands.add(brand);
+    }
+  }
+  if (reverseBrands.size === 1) return [...reverseBrands][0];
+  return null;
+}
+
+/**
  * 获取所有支持的品牌
  */
 export function getAllBrands(): string[] {

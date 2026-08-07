@@ -14,6 +14,7 @@ import { recognizeIntent } from './intent';
 import { generateResponse } from './state-machine';
 import { checkCache } from './cache';
 import { buildConversationSummary } from './summary';
+import { resolveBrand, resolveBrandFromSeries } from './knowledge-base';
 
 // 初始槽位状态
 const initialSlots: CollectedSlots = {
@@ -486,15 +487,45 @@ async function callSlowChannel(
 
 /**
  * 从 LLM 返回的 entities 更新槽位
+ * 统一在此处做品牌归一化（resolveBrand）与车系→品牌反推（resolveBrandFromSeries），
+ * 保证慢通道/快通道回填与规则引擎路径（state-machine.ts）行为一致：
+ * - 客户只说出车系/车型时，品牌能推理出来并在前端正确点亮；
+ * - 客户切换品牌时，旧车系作废，避免"新品牌+旧车系"的错误组合。
  */
 function updateSlotsFromEntities(
   currentSlots: CollectedSlots,
   entities: Record<string, string>
 ): CollectedSlots {
   const newSlots = { ...currentSlots };
-  if (entities.brand) newSlots.brand = entities.brand;
-  if (entities.series) newSlots.series = entities.series;
-  if (entities.model) newSlots.model = entities.model;
+
+  // 品牌：先归一化（BYD→比亚迪、蔚莱→蔚来），切换品牌时清空旧车系
+  if (entities.brand) {
+    const resolvedBrand = resolveBrand(entities.brand) || entities.brand;
+    if (newSlots.brand && resolvedBrand !== newSlots.brand) {
+      // 客户切换品牌 → 旧车系作废，避免"新品牌+旧车系"不一致
+      newSlots.series = null;
+    }
+    newSlots.brand = resolvedBrand;
+  }
+
+  if (entities.series) {
+    newSlots.series = entities.series;
+    // 车系已给但品牌缺失 → 从知识库反推（规则引擎 state-machine.ts 同款逻辑）
+    if (!newSlots.brand) {
+      const inferred = resolveBrandFromSeries(entities.series);
+      if (inferred) newSlots.brand = inferred;
+    }
+  }
+
+  if (entities.model) {
+    newSlots.model = entities.model;
+    // 慢通道可能只提取"车型"未提取"车系/品牌"（如"汉""Model 3"），尝试从车型反推品牌
+    if (!newSlots.brand) {
+      const inferred = resolveBrandFromSeries(entities.model);
+      if (inferred) newSlots.brand = inferred;
+    }
+  }
+
   if (entities.city) newSlots.city = entities.city;
   if (entities.timing) newSlots.timing = entities.timing;
   if (entities.surname) newSlots.surname = entities.surname;
@@ -794,34 +825,39 @@ export function buildFinalStateFromFastChannel(
   currentState: AgentState,
   customerMessage: ChatMessage,
   agentMessageContent: string,
-  parsedResponse: { intent: string; next_state: string; response: string },
+  parsedResponse: { intent: string; next_state: string; response: string; entities?: Record<string, string> },
   latencyData: { firstToken: number; total: number; tokenEstimate: number },
   modelConfig: LLMModelConfig
 ): AgentState {
   // 清洗性别称谓（"王先生"→"王您好"），保证话术不违反项目规则
   const cleanContent = sanitizeAgentReply(agentMessageContent);
   const normalizedNext = normalizeNextState(parsedResponse.next_state, currentState.currentState);
-  // 业务状态迁移校验：防倒退/防跳回，信息闭环时强制 FAREWELL
+  // 快通道实体即时回填槽位（含品牌归一化/车系→品牌反推），
+  // 避免本轮客户说出的品牌/车系要等慢通道回填才显示（慢通道失败时也能及时点亮）
+  const normalizedEntities = normalizeEntityKeys(parsedResponse.entities || {});
+  const mergedSlots = updateSlotsFromEntities(currentState.collectedSlots, normalizedEntities);
+  // 业务状态迁移校验：防倒退/防跳回，信息闭环（姓氏已收集）时强制 FAREWELL
   const nextState = enforceStateTransition(
     currentState.currentState,
     normalizedNext,
     parsedResponse.intent,
-    currentState.collectedSlots
+    mergedSlots
   );
 
   const decision: AgentDecision = {
     perception: {
       intent: parsedResponse.intent as AgentDecision['perception']['intent'],
-      entities: {},
+      entities: { ...normalizedEntities },
       emotion: 'neutral',
     },
     memory: {
       currentState: currentState.currentState,
       exceptionState: currentState.exceptionState,
-      collectedSlots: { ...currentState.collectedSlots },
+      collectedSlots: { ...mergedSlots },
     },
     planning: {
       reasoning: '[快通道] ' + parsedResponse.intent
+        + (Object.keys(normalizedEntities).length > 0 ? `（实体回填: ${Object.keys(normalizedEntities).join('/')}）` : '')
         + (nextState !== normalizedNext ? `（状态迁移已校正: ${normalizedNext} → ${nextState}）` : ''),
       nextState,
       action: 'LLM 快通道生成',
@@ -848,7 +884,7 @@ export function buildFinalStateFromFastChannel(
   return {
     currentState: nextState,
     exceptionState: mapEmotionToException('neutral', parsedResponse.intent),
-    collectedSlots: currentState.collectedSlots,
+    collectedSlots: mergedSlots,
     messages,
     lastDecision: decision,
     turnCount: currentState.turnCount + 1,

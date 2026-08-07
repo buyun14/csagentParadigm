@@ -135,6 +135,8 @@ export interface FastChannelResponse {
   intent: string;
   next_state: string;
   response: string;
+  /** 快通道提取的实体（中文键，如"品牌/车系/城市"，可选——LLM 可能省略） */
+  entities?: Record<string, string>;
 }
 
 // 慢通道响应

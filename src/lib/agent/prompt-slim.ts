@@ -41,14 +41,15 @@ ${kbSection}${summarySection}${historySection}
 
 【规则】
 - 收集目标仅：品牌、车系、城市、看车时间、姓氏。
-- 客户最新消息中已提到的品牌/车系/城市/时间/姓氏视为已收集，绝不再问（如客户说"帕萨特"即视为车系已收集）
+- 客户最新消息中已提到的品牌/车系/城市/时间/姓氏视为已收集，绝不再问（如客户说"帕萨特"即视为车系已收集）,注意谐音
 - 收集顺序：品牌→车系→城市→看车时间→姓氏。只问第一个缺失项；车系已给出后不要追问版本/变体/偏好
 - 每轮最多问一个问题；客户已回答过的信息不要重复确认
+- 客户最新消息中提到的品牌/车系/城市/时间/姓氏，必须同步填入 entities（键用中文：品牌/车系/城市/时间/姓氏）；客户只说了车系没说明品牌时，品牌可从知识库推断补全（如汉→比亚迪）
 
 - 辱骂→道歉退出 | 反感→安抚退出 | 偏离→拉回 | 问价格→引导对接4S店 | 不清晰→追问 | 不编造车型
 
 返回JSON:
-{"intent":"意图","next_state":"下一状态","response":"回复"}
+{"intent":"意图","next_state":"下一状态","response":"回复","entities":{"品牌":"","车系":"","城市":"","时间":"","姓氏":""}}
 
 【next_state 必须严格是以下之一】GREETING / BRAND_INQUIRY / MODEL_INQUIRY / CITY_INQUIRY / TIMING_INQUIRY / CONTACT_COLLECTION / FAREWELL（未收集到新信息时保持当前状态）。
 【intent 参考】greet / confirm_brand / confirm_model / confirm_city / confirm_time / confirm_surname / ask_price / out_of_scope / off_track / unclear / abuse / dislike / farewell。`;
@@ -161,7 +162,7 @@ ${kbSection}
 
 请分析：
 1. 客户情绪（neutral/interested/annoyed/angry）
-2. 提取所有实体（品牌/车系/城市/时间/姓氏/车型/动力类型/信息授权确认；键与老系统采集字段对应，未提及的字段留空）
+2. 提取所有实体（品牌/车系/城市/时间/姓氏/车型/动力类型/信息授权确认；键与老系统采集字段对应，未提及的字段留空；客户只说了车系时，品牌可从车系反推补全，如汉→比亚迪）
 3. 决策推理过程（为什么这样回复）
 4. 护栏检查结果（是否触发辱骂/反感/偏离/超范围；通过则输出 pass）
 

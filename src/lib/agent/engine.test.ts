@@ -15,8 +15,8 @@ function customerMsg(text = '我看蔚来'): ChatMessage {
   return { id: 'msg-c-1', role: 'customer', content: text, timestamp: 1 };
 }
 
-function fastPayload(intent: string, next_state: string, response = '好的') {
-  return { intent, next_state, response };
+function fastPayload(intent: string, next_state: string, response = '好的', entities?: Record<string, string>) {
+  return entities ? { intent, next_state, response, entities } : { intent, next_state, response };
 }
 
 describe('engine 状态迁移校验', () => {
@@ -106,6 +106,65 @@ describe('engine 状态迁移校验', () => {
     expect(r.currentState).toBe('FAREWELL');
   });
 
+  it('快通道 entities 即时回填槽位（只给车系 → 品牌反推）', () => {
+    // 客户直接说"汉"，LLM 只返回车系实体未返回品牌 → 品牌由知识库反推点亮
+    const init = createInitialState();
+    const r = buildFinalStateFromFastChannel(
+      init, customerMsg('我想看汉'), '汉可以的，想了解哪个城市的价格呢？',
+      fastPayload('confirm_model', 'CITY_INQUIRY', '汉可以的', { 车系: '汉' }),
+      { firstToken: 100, total: 500, tokenEstimate: 200 }, modelConfig
+    );
+    expect(r.collectedSlots.series).toBe('汉');
+    expect(r.collectedSlots.brand).toBe('比亚迪');
+    expect(r.currentState).toBe('CITY_INQUIRY');
+    // 决策路径也带上实体，供调试面板展示
+    expect(r.lastDecision?.perception.entities).toEqual({ series: '汉' });
+  });
+
+  it('快通道 entities 品牌归一化（byd → 比亚迪）', () => {
+    const init = createInitialState();
+    const r = buildFinalStateFromFastChannel(
+      init, customerMsg('看 byd'), '好的', fastPayload('confirm_brand', 'MODEL_INQUIRY', '好的', { 品牌: 'byd' }),
+      { firstToken: 100, total: 500, tokenEstimate: 200 }, modelConfig
+    );
+    expect(r.collectedSlots.brand).toBe('比亚迪');
+  });
+
+  it('快通道 entities 回填姓氏 → 信息闭环立即 FAREWELL', () => {
+    // 本轮客户直接报姓氏（口头授权），快通道回填后无需等慢通道即可闭环
+    const init = {
+      ...createInitialState(),
+      currentState: 'CONTACT_COLLECTION' as const,
+      collectedSlots: {
+        brand: '蔚来', series: 'ES8', model: null, city: '北京', timing: '下个月',
+        surname: null, phoneTail: null, vehicleType: null, powerType: null,
+      },
+    };
+    const r = buildFinalStateFromFastChannel(
+      init, customerMsg('我姓王'), '好的', fastPayload('confirm_surname', 'CONTACT_COLLECTION', '王您好，再见', { 姓氏: '王' }),
+      { firstToken: 100, total: 500, tokenEstimate: 200 }, modelConfig
+    );
+    expect(r.collectedSlots.surname).toBe('王');
+    expect(r.currentState).toBe('FAREWELL');
+  });
+
+  it('快通道 entities 切换品牌 → 旧车系作废', () => {
+    const init = {
+      ...createInitialState(),
+      currentState: 'MODEL_INQUIRY' as const,
+      collectedSlots: {
+        brand: '比亚迪', series: '汉', model: null, city: null, timing: null,
+        surname: null, phoneTail: null, vehicleType: null, powerType: null,
+      },
+    };
+    const r = buildFinalStateFromFastChannel(
+      init, customerMsg('还是看蔚来吧'), '好的', fastPayload('confirm_brand', 'MODEL_INQUIRY', '好的', { 品牌: '蔚来' }),
+      { firstToken: 100, total: 500, tokenEstimate: 200 }, modelConfig
+    );
+    expect(r.collectedSlots.brand).toBe('蔚来');
+    expect(r.collectedSlots.series).toBeNull();
+  });
+
   it('fallbackToRuleEngine → responseSource=fallback 且流程可用', () => {
     const init = createInitialState();
     const r = fallbackToRuleEngine(init, '我看比亚迪');
@@ -183,6 +242,57 @@ describe('updateStateWithSlowChannel 慢通道合并', () => {
     const updated = updateStateWithSlowChannel(init, slow, 300);
     expect(updated.collectedSlots.phoneTail).toBe('5678');
     expect(updated.currentState).toBe('CONTACT_COLLECTION');
+  });
+
+  it('慢通道只回填车系（无品牌）→ 品牌反推点亮', () => {
+    // 用户直接说车系/车型、LLM 只提取车系未提取品牌 → 品牌由知识库反推，前端不再"品牌未显示"
+    const init = createInitialState();
+    const slow = {
+      emotion: 'interested',
+      entities: { 车系: 'ES7' },
+      reasoning: '客户表明意向',
+      guardrail_check: 'pass',
+    };
+    const updated = updateStateWithSlowChannel(init, slow, 300);
+    expect(updated.collectedSlots.series).toBe('ES7');
+    expect(updated.collectedSlots.brand).toBe('蔚来');
+  });
+
+  it('慢通道只回填车型（无车系/品牌）→ 品牌反推点亮', () => {
+    const init = createInitialState();
+    const slow = {
+      emotion: 'neutral',
+      entities: { 车型: 'Model 3' },
+      reasoning: '',
+      guardrail_check: 'pass',
+    };
+    const updated = updateStateWithSlowChannel(init, slow, 300);
+    expect(updated.collectedSlots.model).toBe('Model 3');
+    expect(updated.collectedSlots.brand).toBe('特斯拉');
+  });
+
+  it('慢通道切换品牌 → 旧车系作废（避免"新品牌+旧车系"）', () => {
+    const init = {
+      ...createInitialState(),
+      collectedSlots: {
+        brand: '比亚迪', series: '汉', model: null, city: null, timing: null,
+        surname: null, phoneTail: null, vehicleType: null, powerType: null,
+      },
+    };
+    const slow = {
+      emotion: 'neutral',
+      entities: { 品牌: '蔚来', 车系: 'ES8' },
+      reasoning: '',
+      guardrail_check: 'pass',
+    };
+    const updated = updateStateWithSlowChannel(init, slow, 300);
+    expect(updated.collectedSlots.brand).toBe('蔚来');
+    expect(updated.collectedSlots.series).toBe('ES8');
+    // 只切品牌、未给新车系 → 旧车系清空
+    const slow2 = { ...slow, entities: { 品牌: '蔚来' } };
+    const updated2 = updateStateWithSlowChannel(init, slow2, 300);
+    expect(updated2.collectedSlots.brand).toBe('蔚来');
+    expect(updated2.collectedSlots.series).toBeNull();
   });
 
   it('情绪映射 interested → positive', () => {

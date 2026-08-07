@@ -67,6 +67,7 @@ const emotionLabels: Record<string, string> = {
 const entityLabels: Record<string, string> = {
   brand: '品牌',
   series: '车系',
+  model: '车型',
   city: '城市',
   timing: '时间',
   surname: '姓氏',
@@ -100,6 +101,17 @@ const stateFlow: MainDialogState[] = [
   'CONTACT_COLLECTION',
   'FAREWELL',
 ];
+
+// 状态 ↔ 收集目标槽位映射。
+// LLM 客服可能灵活收集信息（跳着问/一次给多项），因此进度条必须由"槽位是否已收集"驱动，
+// 而不是由 currentState 在 stateFlow 中的索引推断——否则会出现"状态已跳到时间但城市未收集也点亮"的假进度。
+const stateSlotMap: Partial<Record<MainDialogState, keyof CollectedSlots>> = {
+  BRAND_INQUIRY: 'brand',
+  MODEL_INQUIRY: 'series',
+  CITY_INQUIRY: 'city',
+  TIMING_INQUIRY: 'timing',
+  CONTACT_COLLECTION: 'surname',
+};
 
 // 可折叠Section组件
 function Section({ 
@@ -239,32 +251,62 @@ export function DebugPanel({ agentState, mode }: DebugPanelProps) {
         {/* State Machine */}
         <Section icon={<Route className="h-3.5 w-3.5" />} title="状态机">
           <div className="space-y-0.5">
-            {stateFlow.map((state, index) => {
+            {stateFlow.map((state) => {
+              const slotKey = stateSlotMap[state];
+              const slotValue = slotKey ? collectedSlots[slotKey] : null;
+              // 该状态是否为当前追问阶段（currentState 由 LLM/规则引擎给出，与槽位无关）
               const isActive = state === currentState;
-              const isPast = stateFlow.indexOf(currentState) > index;
+              // 完成判定由"对应槽位是否已收集"驱动（GREETING/FAREWELL 无槽位，用对话进程判定）
+              const isDone = slotKey
+                ? Boolean(slotValue)
+                : state === 'GREETING'
+                  ? turnCount > 0
+                  : state === 'FAREWELL'
+                    ? currentState === 'FAREWELL'
+                    : false;
               return (
                 <div key={state} className="flex items-center gap-2 py-0.5">
                   <div
                     className={cn(
                       'w-1.5 h-1.5 rounded-full transition-all duration-300',
-                      isActive && 'bg-blue-500 ring-2 ring-blue-500/30 scale-125',
-                      isPast && 'bg-emerald-500',
-                      !isActive && !isPast && 'bg-slate-300'
+                      isDone && 'bg-emerald-500',
+                      !isDone && isActive && 'bg-blue-500 ring-2 ring-blue-500/30 scale-125',
+                      !isDone && !isActive && 'bg-slate-300'
                     )}
                   />
                   <span
                     className={cn(
                       'text-[11px] transition-colors duration-200',
                       isActive && 'text-blue-600 font-medium',
-                      isPast && 'text-emerald-600',
-                      !isActive && !isPast && 'text-slate-400'
+                      !isActive && isDone && 'text-emerald-600',
+                      !isActive && !isDone && 'text-slate-400'
                     )}
                   >
                     {stateLabels[state]}
                   </span>
+                  {slotKey && (
+                    <span
+                      className={cn(
+                        'text-[9px] truncate max-w-[72px]',
+                        slotValue ? 'text-emerald-500' : 'text-slate-300'
+                      )}
+                      title={`${stateLabels[state]}: ${slotValue || '未收集'}`}
+                    >
+                      {slotValue || '-'}
+                    </span>
+                  )}
                   {isActive && (
                     <Badge className="bg-blue-50 text-blue-600 border-blue-200 text-[9px] h-3.5 px-1 ml-auto">
                       当前
+                    </Badge>
+                  )}
+                  {isActive && isDone && (
+                    <Badge
+                      variant="outline"
+                      className="text-amber-500 border-amber-200 text-[9px] h-3.5 px-1 ml-1"
+                      title="当前状态对应的信息已收集，但状态机未随之推进（LLM 灵活收集的预期表现）"
+                    >
+                      状态滞后
                     </Badge>
                   )}
                 </div>
@@ -465,13 +507,14 @@ function LatencyItem({ label, value, color }: { label: string; value: number; co
 }
 
 function SlotGrid({ slots }: { slots: CollectedSlots }) {
+  // 收集目标仅 5 项：品牌/车系/城市/时间/姓氏（手机尾号不收集，不参与进度计数；
+  // 若客户主动报尾号，仍可在"感知-实体"区查看）
   const slotItems = [
     { key: 'brand', label: '品牌', value: slots.brand },
     { key: 'series', label: '车系', value: slots.series },
     { key: 'city', label: '城市', value: slots.city },
     { key: 'timing', label: '时间', value: slots.timing },
     { key: 'surname', label: '姓氏', value: slots.surname },
-    { key: 'phoneTail', label: '手机尾号', value: slots.phoneTail },
   ];
 
   const filledCount = slotItems.filter(item => item.value).length;
@@ -480,7 +523,7 @@ function SlotGrid({ slots }: { slots: CollectedSlots }) {
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
         <span className="text-[9px] text-slate-400">
-          {filledCount}/6 已收集
+          {filledCount}/5 已收集
         </span>
         <div className="flex gap-0.5">
           {slotItems.map((item) => (
