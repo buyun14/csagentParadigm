@@ -285,6 +285,10 @@ export function generateResponse(
       if (newSlots.brand) {
         const series = getBrandSeries(newSlots.brand);
         reply = `${newSlots.brand}有${series.join('、')}，您看您想了解哪款车呢？`;
+      } else {
+        // 品牌未确认时追问品牌/车型，避免空回复
+        reasoning = '品牌未确认，引导确认车型';
+        reply = getCurrentQuestion('MODEL_INQUIRY', newSlots);
       }
       nextState = 'MODEL_INQUIRY';
     } else if (intent === 'out_of_scope') {

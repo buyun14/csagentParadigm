@@ -71,6 +71,7 @@ const ENTITY_KEY_ALIASES: Record<string, keyof CollectedSlots> = {
   姓氏: 'surname',
   手机尾号: 'phoneTail',
   车型: 'model',
+  车身类型: 'vehicleType',
   动力类型: 'powerType',
 };
 

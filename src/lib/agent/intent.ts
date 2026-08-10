@@ -10,7 +10,7 @@ export interface IntentResult {
 }
 
 // 问候词
-const greetWords = [
+export const greetWords = [
   '喂', '你好', '您好', '嗨', 'hi', 'hello', '在吗', '在的',
   '嗯', '嗯嗯', '哦', '哦哦', '啊', '好的',
 ];
@@ -19,30 +19,32 @@ const greetWords = [
 const agreeWords = [
   '好的', '好', '行', '可以', '没问题', '嗯', '对', '对的',
   '是的', '没错', '好嘞', '行吧', '好吧', '那行', '中', '中啊',
-  '好吧', '嗯好', '好好好', 'ok', 'OK', '行嘞', '是',
+  '好吧', '嗯好', '好好好', 'ok', 'OK', '行嘞',
   '考虑', '可以考虑', '有兴趣',
 ];
 
 // 否定词（注意：单字“没”易误伤“有没有/有没有考虑”等疑问句，已移除，由“没有”等双字词覆盖）
-const disagreeWords = [
+export const disagreeWords = [
   '不要', '不用', '不需要', '不考虑', '算了', '不了', '别',
   '没有', '不想', '不必', '暂不需要',
-  '不买', '不买了',
+  '不买', '不买了', '不是', '不行', '没啥', '没兴趣', '不感兴趣',
+  '没打算', '不用了', '不要了', '不看了', '不考虑了',
 ];
 
 // 辱骂词
-const abuseWords = [
+export const abuseWords = [
   '滚', '傻逼', 'sb', '操', '妈的', '去死', '神经病', '有病',
-  '垃圾', '废物', '烦死了', '骚扰', '骗子', '混蛋', '无耻',
+  '垃圾', '废物', '骗子', '混蛋', '无耻',
   '不要脸', '恶心', '讨厌', '去你妈', '你妈', '草泥马',
   '麻痹', '逼', '贱', '蠢', '智障',
 ];
 
 // 反感表达
-const dislikeWords = [
+export const dislikeWords = [
   '又是推销', '别打了', '别打了', '不要再打了', '烦不烦',
   '天天打', '怎么又打', '说了不要', '已经买过了', '不需要谢谢',
-  '别骚扰', '拉黑', '投诉', '举报',
+  '别骚扰', '拉黑', '投诉', '举报', '别烦我', '不要打',
+  '烦死了', '骚扰',
 ];
 
 // 告别词
@@ -52,9 +54,9 @@ const farewellWords = [
 ];
 
 // 等待词
-const waitWords = [
+export const waitWords = [
   '等一下', '等等', '稍等', '等下', '等一会', '先别急',
-  '我想想', '让我想想',
+  '我想想', '让我想想', '等会', '现在忙', '在开会',
 ];
 
 // 城市列表（常见城市）
@@ -73,6 +75,8 @@ const timePatterns = [
   { regex: /下个月|下月/, value: '下个月' },
   { regex: /这个月|本月/, value: '这个月' },
   { regex: /年底|过年|春节前|年前/, value: '年底' },
+  { regex: /明年|后年/, value: '' }, // 动态匹配
+  { regex: /今年/, value: '' }, // 动态匹配
   { regex: /上半年|年中/, value: '上半年' },
   { regex: /下半年/, value: '下半年' },
   { regex: /(\d{1,2})月/, value: '' }, // 动态匹配
@@ -277,6 +281,18 @@ export function recognizeIntent(input: string): IntentResult {
     }
   }
 
+  // 否定（优先于问候/超范围/肯定：否定句常含“考虑/好/行/是”等词，
+  // 如“嗯，不考虑”“我不是看蔚来”“不考虑分期”，需最先拦截）
+  for (const word of disagreeWords) {
+    // “有没有…”是疑问句，其中的“没有”子串不是否定表达
+    if (word === '没有' && /有没有/.test(text)) continue;
+    // “是不是…”是疑问句，其中的“不是”子串不是否定表达
+    if (word === '不是' && /是不是/.test(text)) continue;
+    if (text.includes(word)) {
+      return { intent: 'disagree', entities, confidence: 0.8 };
+    }
+  }
+
   // 问候（短文本且包含问候词）
   if (text.length <= 5) {
     for (const word of greetWords) {
@@ -290,15 +306,6 @@ export function recognizeIntent(input: string): IntentResult {
   for (const pattern of outOfScopePatterns) {
     if (pattern.test(text)) {
       return { intent: 'out_of_scope', entities, confidence: 0.75 };
-    }
-  }
-
-  // 否定（先于肯定：否定句常含“考虑/好/行”等词，如“不考虑”，需优先拦截）
-  for (const word of disagreeWords) {
-    // “有没有…”是疑问句，其中的“没有”子串不是否定表达
-    if (word === '没有' && /有没有/.test(text)) continue;
-    if (text.includes(word)) {
-      return { intent: 'disagree', entities, confidence: 0.8 };
     }
   }
 

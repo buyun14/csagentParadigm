@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { LLMClient, Config, HeaderUtils } from 'coze-coding-dev-sdk';
 import type { MainDialogState, CollectedSlots, LLMModelConfig } from '@/lib/agent/types';
 import { buildSlimPrompt, estimateTokens } from '@/lib/agent/prompt-slim';
+import { createResponseExtractor } from '@/lib/agent/response-stream';
 
 // 快通道：意图识别 + 状态决策 + 话术生成
 // 使用精简 Prompt，流式输出，超时 8 秒
@@ -80,6 +81,8 @@ export async function POST(request: NextRequest) {
     const encoder = new TextEncoder();
     let firstTokenTime = 0;
     let fullContent = '';
+    // 增量提取 response 字段：chunk 事件只下发最终话术文本，TTS 可直接消费
+    const extractor = createResponseExtractor();
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -90,21 +93,39 @@ export async function POST(request: NextRequest) {
           ));
 
           for await (const chunk of resp) {
-            const content = chunk.content || '';
+            // 流式输出 content 为字符串；兼容 SDK 返回内容块数组的情况
+            const content = typeof chunk.content === 'string' ? chunk.content : '';
             if (content) {
-              if (firstTokenTime === 0) {
-                firstTokenTime = Date.now();
-                // 发送首字延迟
+              fullContent += content;
+              // 只把提取出的 response 文本流式下发（避免把原始 JSON 暴露给前端/TTS）
+              const replyText = extractor.push(content);
+              if (replyText) {
+                if (firstTokenTime === 0) {
+                  firstTokenTime = Date.now();
+                  // 首字延迟：以话术首个文本到达为准（对接 TTS 的口径）
+                  controller.enqueue(encoder.encode(
+                    `data: ${JSON.stringify({ type: 'first_token', latency: firstTokenTime - startTime })}\n\n`
+                  ));
+                }
                 controller.enqueue(encoder.encode(
-                  `data: ${JSON.stringify({ type: 'first_token', latency: firstTokenTime - startTime })}\n\n`
+                  `data: ${JSON.stringify({ type: 'chunk', content: replyText })}\n\n`
                 ));
               }
-              fullContent += content;
-              // 流式发送文本块
+            }
+          }
+
+          // 容错：LLM 未按 JSON 模板输出（无 response 字段）且内容为纯文本时，
+          // 补发一次完整文本，保证用户至少能看到话术
+          if (!extractor.started && fullContent.trim() && !fullContent.trim().startsWith('{')) {
+            if (firstTokenTime === 0) {
+              firstTokenTime = Date.now();
               controller.enqueue(encoder.encode(
-                `data: ${JSON.stringify({ type: 'chunk', content })}\n\n`
+                `data: ${JSON.stringify({ type: 'first_token', latency: firstTokenTime - startTime })}\n\n`
               ));
             }
+            controller.enqueue(encoder.encode(
+              `data: ${JSON.stringify({ type: 'chunk', content: fullContent.trim() })}\n\n`
+            ));
           }
 
           // ===== 调试日志：打印 LLM 原始输出 =====

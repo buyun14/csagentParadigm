@@ -40,7 +40,7 @@ Windows 下等价命令：`pnpm start`（需先执行 `pnpm build` 生成 `dist/
 ### 测试与校验
 
 ```bash
-pnpm test       # vitest 单测（核心模块 117 例）
+pnpm test       # vitest 单测（核心模块 159 例）
 pnpm validate   # ts-check + eslint + stylelint 全量校验
 pnpm exec tsx scripts/demo-walkthrough.ts  # 演示用例实测（rule 模式，离线）
 ```

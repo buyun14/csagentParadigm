@@ -43,6 +43,26 @@ describe('recognizeIntent 意图识别', () => {
     expect(r.intent).toBe('disagree');
   });
 
+  it('否定：我不是看蔚来 → disagree（"是"不再误判为肯定）', () => {
+    const r = recognizeIntent('我不是看蔚来');
+    expect(r.intent).toBe('disagree');
+  });
+
+  it('否定：不考虑分期 → disagree（优先于超范围）', () => {
+    const r = recognizeIntent('不考虑分期');
+    expect(r.intent).toBe('disagree');
+  });
+
+  it('否定：嗯，不考虑 → disagree（优先于问候）', () => {
+    const r = recognizeIntent('嗯，不考虑');
+    expect(r.intent).toBe('disagree');
+  });
+
+  it('疑问句：是不是蔚来 → 不误判为否定', () => {
+    const r = recognizeIntent('是不是蔚来');
+    expect(r.intent).toBe('confirm_brand');
+  });
+
   it('品牌确认：包含品牌名 → confirm_brand + 实体', () => {
     const r = recognizeIntent('我看蔚来');
     expect(r.intent).toBe('confirm_brand');
@@ -66,6 +86,18 @@ describe('recognizeIntent 意图识别', () => {
     const r = recognizeIntent('下个月买');
     expect(r.intent).toBe('confirm_time');
     expect(r.entities.timing).toBe('下个月');
+  });
+
+  it('时间确认：明年买 → confirm_time', () => {
+    const r = recognizeIntent('明年买');
+    expect(r.intent).toBe('confirm_time');
+    expect(r.entities.timing).toBe('明年');
+  });
+
+  it('时间确认：今年买 → confirm_time', () => {
+    const r = recognizeIntent('今年买');
+    expect(r.intent).toBe('confirm_time');
+    expect(r.entities.timing).toBe('今年');
   });
 
   it('姓氏确认：我姓张 → confirm_surname', () => {

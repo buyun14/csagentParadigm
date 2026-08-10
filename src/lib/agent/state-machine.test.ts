@@ -44,10 +44,22 @@ describe('generateResponse 状态机', () => {
     expect(r.updatedSlots.brand).toBe('比亚迪');
   });
 
+  it('BRAND_INQUIRY + 我不是看蔚来 → 否定不收集品牌', () => {
+    const r = run('我不是看蔚来', 'BRAND_INQUIRY');
+    expect(r.updatedSlots.brand).toBeNull();
+    expect(r.nextState).toBe('BRAND_INQUIRY');
+  });
+
   it('MODEL_INQUIRY + 确认车系 → CITY_INQUIRY', () => {
     const r = run('ES8', 'MODEL_INQUIRY', { ...emptySlots, brand: '蔚来' });
     expect(r.nextState).toBe('CITY_INQUIRY');
     expect(r.updatedSlots.series).toBe('ES8');
+  });
+
+  it('MODEL_INQUIRY + 询问车辆（无品牌）→ 非空引导回复', () => {
+    const r = run('有什么车', 'MODEL_INQUIRY');
+    expect(r.reply.length).toBeGreaterThan(0);
+    expect(r.nextState).toBe('MODEL_INQUIRY');
   });
 
   it('CITY_INQUIRY + 确认城市 → TIMING_INQUIRY', () => {

@@ -131,6 +131,7 @@
 
 ### SSE 事件协议（fast）
 `metadata`（tokenEstimate）→ `first_token`（latency）→ `chunk`*（content）→ `done`（fullContent/latency）→ `data: [DONE]`；错误发 `error` 事件。非 `text/event-stream` 响应视为失败触发降级。
+`chunk.content` 为服务端增量提取的 `response` 话术文本（`response-stream.ts`），不是原始 JSON——TTS 接入方可直接消费；原始 JSON 仅在 `done.fullContent` 中，供状态构建与调试。`first_token` 以话术首个文本到达为准（对接 TTS 的口径）。
 
 ### 前端防竞态（page.tsx）
 - `generationRef` 代次令牌：重置/新发送递增，进行中回调按代次丢弃，防旧结果覆盖新状态
@@ -148,7 +149,7 @@
 
 ## Notes
 
-- 近期主线（git log）：双通道流式 → 防竞态/降级/缓存 → 布局修复（flex `min-h-0`、去百分比高度链条、`h-dvh`）→ 工程化（vitest 单测 117 例）→ 老系统数据导入（legacy/）→ 记忆强化（rolling summary、不回问、护栏复核）。
+- 近期主线（git log）：双通道流式 → 防竞态/降级/缓存 → 布局修复（flex `min-h-0`、去百分比高度链条、`h-dvh`）→ 工程化（vitest 单测 159 例）→ 老系统数据导入（legacy/）→ 记忆强化（rolling summary、不回问、护栏复核）。
 - 已修复遗留：流式 idle 超时（3s，读循环不再挂起）；"停止生成"交互（AbortController 透出到 UI）；chat-input Enter 检查 `e.nativeEvent.isComposing`；补 aria-label；`<html lang="zh-CN">`；业务组件启用 .dark 语义 token（核心骨架）。
 - 已知遗留：流式读取阶段无 idle 超时（读循环挂起）→ 已修复；`<html lang="en">` → 已改 zh-CN；业务组件 .dark → 已启用。
 - 新增待办：`USER_NOT_ANSWER`/`AI_UNKNOWN` 的语音信号接入（平台侧，计数逻辑已实现于 `legacy/special-tokens.ts`）；老系统 21 条知识库全量切换进规则引擎（数据已导入 `legacy/knowledge-entries.ts`，当前仍用精简词表）；`<html lang>` 检查；调试面板可补充展示对话摘要与护栏复核结果。

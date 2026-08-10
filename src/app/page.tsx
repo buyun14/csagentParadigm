@@ -199,8 +199,8 @@ export default function Home() {
               if (generationRef.current !== generation) return;
               streamRef.current.content += content;
               const accumulated = streamRef.current.content;
-
-              // 更新消息列表中的 agent 消息内容（流式效果）
+              // 快通道 chunk 已是服务端提取的 response 话术文本（非原始 JSON），
+              // 可安全逐字渲染，保留打字机效果
               setAgentState((prev) => {
                 const messages = prev.messages.map((m) => {
                   if (m.id === agentMessageId) {
@@ -507,7 +507,7 @@ function parseFastResponse(content: string, currentState: string): { intent: str
     }
     const parsed = JSON.parse(cleaned);
     // response 存在即可用；next_state 缺失/非法时回退到当前状态（由 engine 校验兜底）
-    if (typeof parsed.response === 'string') {
+    if (typeof parsed.response === 'string' && parsed.response.trim().length > 0) {
       // 快通道实体（中文键，如"品牌/车系/城市"）；LLM 可能省略或给非法类型，需防御
       const entities =
         typeof parsed.entities === 'object' && parsed.entities !== null && !Array.isArray(parsed.entities)
@@ -523,12 +523,15 @@ function parseFastResponse(content: string, currentState: string): { intent: str
   } catch {
     // ignore
   }
-  // 如果无法解析 JSON，把整个内容当作回复
-  if (content.trim().length > 0) {
+  // 如果内容不是以 JSON 开头（纯文本话术），把整个内容当作回复；
+  // 若看起来像 JSON 但解析失败（如 max_tokens 截断），返回 null 触发降级，
+  // 避免把半截 JSON 直接展示给客户
+  const trimmedContent = content.trim();
+  if (trimmedContent.length > 0 && !trimmedContent.startsWith('{')) {
     return {
       intent: 'unknown',
       next_state: currentState,
-      response: content.trim(),
+      response: trimmedContent,
     };
   }
   return null;

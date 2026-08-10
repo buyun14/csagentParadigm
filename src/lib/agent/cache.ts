@@ -1,4 +1,5 @@
 import type { MainDialogState, CacheEntry } from '@/lib/agent/types';
+import { abuseWords, dislikeWords, waitWords, greetWords } from './intent';
 
 /**
  * 轻量缓存机制
@@ -61,14 +62,14 @@ export function checkCache(
 ): CacheEntry | null {
   const input = userInput.trim().toLowerCase();
 
-  // 1. 检测辱骂关键词
-  if (detectAbuse(input)) {
-    return cacheStore.get('ANY:abuse') || null;
-  }
-
-  // 2. 检测反感关键词
+  // 1. 检测反感关键词（与 intent.ts 同一词表，顺序与意图识别一致：反感先于辱骂）
   if (detectDislike(input)) {
     return cacheStore.get('ANY:dislike') || null;
+  }
+
+  // 2. 检测辱骂关键词
+  if (detectAbuse(input)) {
+    return cacheStore.get('ANY:abuse') || null;
   }
 
   // 3. 检测等待/稍等
@@ -91,28 +92,24 @@ export function checkCache(
 
 // 辱骂检测
 function detectAbuse(input: string): boolean {
-  const abuseKeywords = ['傻逼', '妈的', '滚', '操', '草', 'fuck', 'shit', '去死', '神经病', '有病'];
-  return abuseKeywords.some(kw => input.includes(kw));
+  return abuseWords.some(kw => input.includes(kw));
 }
 
 // 反感检测
 function detectDislike(input: string): boolean {
-  const dislikeKeywords = ['别打了', '不要打', '又是推销', '烦死了', '不需要', '别烦我', '骚扰', '投诉'];
-  return dislikeKeywords.some(kw => input.includes(kw));
+  return dislikeWords.some(kw => input.includes(kw));
 }
 
 // 等待检测
 function detectWait(input: string): boolean {
-  const waitKeywords = ['等一下', '稍等', '等会', '现在忙', '在开会', '一会'];
-  return waitKeywords.some(kw => input.includes(kw));
+  return waitWords.some(kw => input.includes(kw));
 }
 
 // 简单问候检测
 function isSimpleGreet(input: string): boolean {
-  const greetKeywords = ['喂', '你好', '嗯', '哦', '啊', '嗨', 'hi', 'hello'];
   // 只匹配纯问候（没有其他内容）
   if (input.length <= 6) {
-    return greetKeywords.some(kw => input.includes(kw));
+    return greetWords.some(kw => input.includes(kw));
   }
   return false;
 }
