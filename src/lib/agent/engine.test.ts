@@ -106,6 +106,29 @@ describe('engine 状态迁移校验', () => {
     expect(r.currentState).toBe('FAREWELL');
   });
 
+  it('客户早期报姓氏（其余槽位未收集）→ 不提前 FAREWELL，按序推进（回归：#1）', () => {
+    // 客户开场即报姓氏，品牌/车系/城市/时间尚未收集：不应因姓氏已收集而直接结束，
+    // 也不应被 confirm_surname 推进下限抬到 CONTACT_COLLECTION
+    const init = createInitialState();
+    const r = buildFinalStateFromFastChannel(
+      init, customerMsg('我姓王'), '好的',
+      fastPayload('confirm_surname', 'BRAND_INQUIRY', '好的', { 姓氏: '王' }),
+      { firstToken: 100, total: 500, tokenEstimate: 200 }, modelConfig
+    );
+    expect(r.collectedSlots.surname).toBe('王');
+    expect(r.currentState).toBe('BRAND_INQUIRY');
+  });
+
+  it('off_track 意图 → 异常状态标记为 OFF_TRACK（回归：#2）', () => {
+    const init = createInitialState();
+    const r = buildFinalStateFromFastChannel(
+      init, customerMsg('今天天气不错'), '好的',
+      fastPayload('off_track', 'BRAND_INQUIRY'),
+      { firstToken: 100, total: 500, tokenEstimate: 200 }, modelConfig
+    );
+    expect(r.exceptionState).toBe('OFF_TRACK');
+  });
+
   it('快通道 entities 即时回填槽位（只给车系 → 品牌反推）', () => {
     // 客户直接说"汉"，LLM 只返回车系实体未返回品牌 → 品牌由知识库反推点亮
     const init = createInitialState();

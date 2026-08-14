@@ -100,21 +100,29 @@ const STATE_ORDER: Record<MainDialogState, number> = {
 };
 
 // 各 intent 至少应推进到的状态（防止 LLM 状态跳回/停滞导致流程倒退）
+// 注意：confirm_surname 不在此设推进下限——客户可能在流程早期随口报姓氏，
+// 若强制抬到 CONTACT_COLLECTION 会跳过品牌/车系/城市/时间的收集；
+// 末期闭环由 isInfoComplete（五项齐备）统一推进 FAREWELL。
 const INTENT_MIN_STATE: Partial<Record<string, MainDialogState>> = {
   confirm_brand: 'MODEL_INQUIRY',
   confirm_model: 'CITY_INQUIRY',
   confirm_city: 'TIMING_INQUIRY',
   confirm_time: 'CONTACT_COLLECTION',
-  // confirm_surname 确认姓氏（口头授权）→ 信息闭环由 infoComplete 统一推进 FAREWELL
-  confirm_surname: 'CONTACT_COLLECTION',
   abuse: 'FAREWELL',
   dislike: 'FAREWELL',
   farewell: 'FAREWELL',
 };
 
+/** 信息闭环条件：收集目标五项（品牌、车系、城市、看车时间、姓氏）全部齐备 */
+function isInfoComplete(slots: CollectedSlots): boolean {
+  return Boolean(
+    slots.brand && slots.series && slots.city && slots.timing && slots.surname
+  );
+}
+
 /**
  * 业务状态迁移校验（快通道 LLM 的 next_state 只是参考值）：
- * 1. 姓氏已收集（确认口头授权）→ 信息闭环，强制 FAREWELL；
+ * 1. 信息闭环（五项收集目标齐备）→ 强制 FAREWELL；
  * 2. intent 驱动的推进下限（confirm_* 至少推进到对应下一状态）；
  * 3. 不允许倒退到早于当前状态的位置；
  * 4. FAREWELL 为终态，不可回退（当前已是 FAREWELL 时保持）。
@@ -127,8 +135,8 @@ function enforceStateTransition(
   slots: CollectedSlots
 ): MainDialogState {
   const intentMin = INTENT_MIN_STATE[intent];
-  // 信息闭环：姓氏已收集（口头授权）即满足，手机尾号不再收集
-  const infoComplete = Boolean(slots.surname);
+  // 信息闭环：五项收集目标齐备才结束，避免客户早期随口报姓氏导致提前挂断
+  const infoComplete = isInfoComplete(slots);
   const candidates = [
     STATE_ORDER[current],
     STATE_ORDER[rawNext],
@@ -554,7 +562,7 @@ function mapEmotion(emotion: string): 'neutral' | 'positive' | 'negative' | 'ang
 function mapEmotionToException(emotion: string, intent: string): ExceptionState {
   if (intent === 'abuse' || emotion === 'angry') return 'ABUSE';
   if (intent === 'dislike') return 'ABUSE';
-  if (intent === 'off_topic') return 'OFF_TRACK';
+  if (intent === 'off_track') return 'OFF_TRACK';
   if (intent === 'unclear') return 'UNCLEAR';
   if (intent === 'ask_price' || intent === 'out_of_scope') return 'OUT_OF_SCOPE';
   return 'NONE';
@@ -929,9 +937,9 @@ export function updateStateWithSlowChannel(
   // 护栏复核联动：慢通道 guardrail_check 命中严重护栏（辱骂/反感）→ 强制 FAREWELL 并修正话术
   const guardrail = evaluateGuardrail(slowResult.guardrail_check);
 
-  // 信息闭环检测：姓氏已收集（确认口头授权）且对话尚未结束 → 立即进入 FAREWELL，
+  // 信息闭环检测：五项收集目标齐备且对话尚未结束 → 立即进入 FAREWELL，
   // 无需等下一轮用户输入（慢通道回填完成即闭环）
-  const infoComplete = Boolean(updatedSlots.surname);
+  const infoComplete = isInfoComplete(updatedSlots);
   let nextCurrentState: MainDialogState =
     infoComplete && currentState.currentState !== 'FAREWELL'
       ? 'FAREWELL'
