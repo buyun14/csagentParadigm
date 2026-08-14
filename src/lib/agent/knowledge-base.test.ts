@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { queryVehicleKB, resolveBrand, resolveType, resolvePower, getBrandSeries, getAllBrands, resolveBrandFromSeries } from './knowledge-base';
+import { queryVehicleKB, resolveBrand, resolveType, resolvePower, getBrandSeries, getAllBrands, resolveBrandFromSeries, matchSeriesFromText } from './knowledge-base';
 
 describe('knowledge-base 知识库查询', () => {
   it('品牌精确匹配', () => {
@@ -115,5 +115,32 @@ describe('resolveBrandFromSeries 车系反推品牌', () => {
     expect(resolveBrandFromSeries('不存在的车系XYZ')).toBeNull();
     expect(resolveBrandFromSeries('')).toBeNull();
     expect(resolveBrandFromSeries('  ')).toBeNull();
+  });
+});
+
+describe('matchSeriesFromText 文本内车系匹配', () => {
+  it('旅行者 → 捷途/旅行者', () => {
+    expect(matchSeriesFromText('旅行者')).toEqual({ series: '旅行者', brand: '捷途' });
+  });
+
+  it('五菱缤果S → 缤果S', () => {
+    const hit = matchSeriesFromText('五菱缤果S');
+    expect(hit?.series).toBe('缤果S');
+    expect(hit?.brand).toBe('五菱汽车');
+  });
+
+  it('宋PLUS 最长匹配优先于宋', () => {
+    const hit = matchSeriesFromText('宋PLUS');
+    expect(hit?.series).toBe('宋PLUS');
+    expect(hit?.brand).toBe('比亚迪');
+  });
+
+  it('品牌限定时优先该品牌车系', () => {
+    const hit = matchSeriesFromText('旅行者', '捷途');
+    expect(hit).toEqual({ series: '旅行者', brand: '捷途' });
+  });
+
+  it('空输入 → null', () => {
+    expect(matchSeriesFromText('')).toBeNull();
   });
 });

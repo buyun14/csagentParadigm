@@ -33,6 +33,16 @@ describe('engine 状态迁移校验', () => {
     expect(sanitizeAgentReply('嗯王先生再见')).toBe('嗯王您好再见');
   });
 
+  it('sanitizeAgentReply 清洗您好/女士脏模板与索要手机号', () => {
+    expect(sanitizeAgentReply('好的，路您好/女士。那您想了解哪个品牌？')).toBe(
+      '好的，路您好。那您想了解哪个品牌？'
+    );
+    expect(sanitizeAgentReply('李先生/女士，稍后联系')).toBe('李您好，稍后联系');
+    const stripped = sanitizeAgentReply('好的，那麻烦您留个手机号，我稍后把报价单发给您。');
+    expect(stripped).not.toContain('手机号');
+    expect(stripped.length).toBeGreaterThan(0);
+  });
+
   it('createInitialState 初始为 GREETING 且含开场白', () => {
     const s = createInitialState();
     expect(s.currentState).toBe('GREETING');

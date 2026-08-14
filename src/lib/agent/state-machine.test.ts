@@ -33,6 +33,15 @@ describe('generateResponse 状态机', () => {
     expect(r.updatedSlots.brand).toBe('蔚来');
   });
 
+  it('GREETING + 五菱缤果S → 直接 CITY_INQUIRY（品牌+车系一次收齐不回问）', () => {
+    const r = run('五菱缤果S', 'GREETING');
+    expect(r.nextState).toBe('CITY_INQUIRY');
+    expect(r.updatedSlots.brand).toBe('五菱汽车');
+    expect(r.updatedSlots.series).toBe('缤果S');
+    expect(r.reply).toContain('购车');
+    expect(r.reply).not.toContain('关注什么车');
+  });
+
   it('GREETING + 否定 → 柔性挽留留在流程', () => {
     const r = run('不考虑', 'GREETING');
     expect(r.nextState).toBe('BRAND_INQUIRY');
@@ -74,6 +83,37 @@ describe('generateResponse 状态机', () => {
     expect(r.updatedSlots.timing).toBe('下个月');
   });
 
+  it('MODEL_INQUIRY + 旅行者 → CITY_INQUIRY（不重列全系）', () => {
+    const r = run('旅行者', 'MODEL_INQUIRY', { ...emptySlots, brand: '捷途' });
+    expect(r.nextState).toBe('CITY_INQUIRY');
+    expect(r.updatedSlots.series).toBe('旅行者');
+    expect(r.reply).toContain('购车');
+    expect(r.reply).not.toContain('X70');
+  });
+
+  it('TIMING_INQUIRY + 半个月以后 → CONTACT_COLLECTION', () => {
+    const r = run('半个月以后', 'TIMING_INQUIRY');
+    expect(r.nextState).toBe('CONTACT_COLLECTION');
+    expect(r.updatedSlots.timing).toBe('半个月后');
+  });
+
+  it('TIMING_INQUIRY + 看价格吧 → 记时间并推进（破死锁）', () => {
+    const r = run('看价格吧', 'TIMING_INQUIRY', {
+      ...emptySlots, brand: '本田', series: '奥德赛', city: '保定',
+    });
+    expect(r.nextState).toBe('CONTACT_COLLECTION');
+    expect(r.updatedSlots.timing).toBe('看价格');
+  });
+
+  it('TIMING_INQUIRY + 问价超范围 → 软着陆仍停在时间收集', () => {
+    const r = run('市场价格什么价格？', 'TIMING_INQUIRY', {
+      ...emptySlots, brand: '本田', series: '奥德赛', city: '保定',
+    });
+    expect(r.nextState).toBe('TIMING_INQUIRY');
+    expect(r.nextException).toBe('OUT_OF_SCOPE');
+    expect(r.reply).toContain('4S');
+  });
+
   it('CONTACT_COLLECTION + 姓氏 → FAREWELL', () => {
     const r = run('我姓王', 'CONTACT_COLLECTION');
     expect(r.nextState).toBe('FAREWELL');
@@ -105,7 +145,7 @@ describe('generateResponse 状态机', () => {
   it('超范围问题（价格）→ OUT_OF_SCOPE 引导 4S 店', () => {
     const r = run('落地多少钱？', 'MODEL_INQUIRY', { ...emptySlots, brand: '蔚来' });
     expect(r.nextException).toBe('OUT_OF_SCOPE');
-    expect(r.reply).toContain('四S店');
+    expect(r.reply).toContain('4S店');
   });
 
   it('输入不清 → UNCLEAR 澄清追问', () => {

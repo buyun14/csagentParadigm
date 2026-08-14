@@ -28,6 +28,15 @@ describe('ASR 谐音纠错 correctAsrText', () => {
     expect(correctAsrText('su7')).toBe('SU7');
   });
 
+  it('车型谐音：送plus → 宋PLUS', () => {
+    expect(correctAsrText('送plus')).toBe('宋PLUS');
+    expect(correctAsrText('送 PLUS')).toBe('宋PLUS');
+  });
+
+  it('车型谐音：维兰达 → 威兰达', () => {
+    expect(correctAsrText('维兰达')).toBe('威兰达');
+  });
+
   it('无谐音文本保持不变', () => {
     expect(correctAsrText('我想了解一下购车优惠')).toBe('我想了解一下购车优惠');
   });

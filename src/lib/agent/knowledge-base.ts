@@ -13,7 +13,7 @@ const EMPTY_SERIES: SeriesInfo = { type: '未知', power: '未知', priceRange: 
 // 手写补充车系：xlsx 未收录的真实车系名（仅车系名，无附加字段）
 const manualSeries: Record<string, string[]> = {
   '蔚来': ['ES7'],
-  '比亚迪': ['宋'],
+  '比亚迪': ['宋', '宋PLUS'],
 };
 
 // 合并 xlsx 车型库（vehicle-brands.generated.ts）与手写补充车系：
@@ -257,6 +257,90 @@ export function resolveBrandFromSeries(series: string): string | null {
   }
   if (reverseBrands.size === 1) return [...reverseBrands][0];
   return null;
+}
+
+/**
+ * 从客户文本中匹配车系（最长优先）。
+ * brandHint 有值时优先在该品牌下车系中匹配；未命中再全局回退（仅 ≥2 字车系）。
+ * 跨品牌同名车系：series 仍返回，brand 置 null（安全契约，与 resolveBrandFromSeries 一致）。
+ */
+export function matchSeriesFromText(
+  text: string,
+  brandHint?: string | null
+): { series: string; brand: string | null } | null {
+  const raw = (text || '').trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+
+  const hint = brandHint ? resolveBrand(brandHint) || brandHint : null;
+
+  const collect = (brandKeys: string[], allowSingleChar: boolean) => {
+    const cands: Array<{ series: string; brand: string; len: number; end: number }> = [];
+    for (const brand of brandKeys) {
+      const seriesMap = knowledgeBase.brands[brand]?.series;
+      if (!seriesMap) continue;
+      for (const name of Object.keys(seriesMap)) {
+        const nl = name.toLowerCase();
+        if (name.length >= 2) {
+          const idx = lower.indexOf(nl);
+          if (idx >= 0) {
+            cands.push({ series: name, brand, len: name.length, end: idx + name.length });
+          }
+        } else if (allowSingleChar) {
+          // 单字车系（汉/宋/秦/唐…）：带 PLUS/Pro 等后缀时优先落到完整车系名
+          const singleRe = new RegExp(
+            `(?:^|[看买是款要的])(${name})(PLUS|Plus|plus|Pro|PRO|L|MAX|DM|Ultra|ULTRA|UP)?`
+          );
+          const m = raw.match(singleRe);
+          if (raw === name || m) {
+            const suffix = m?.[2] || '';
+            let chosen = name;
+            if (/plus/i.test(suffix) && seriesMap[`${name}PLUS`]) {
+              chosen = `${name}PLUS`;
+            } else if (suffix) {
+              const full = `${name}${suffix}`;
+              if (seriesMap[full]) chosen = full;
+            }
+            const idx = m?.index ?? 0;
+            const matchedLen = (m?.[1]?.length || name.length) + (m?.[2]?.length || 0);
+            cands.push({
+              series: chosen,
+              brand,
+              len: chosen.length,
+              end: idx + matchedLen,
+            });
+          }
+        }
+      }
+    }
+    return cands;
+  };
+
+  let cands =
+    hint && knowledgeBase.brands[hint]
+      ? collect([hint], true)
+      : collect(Object.keys(knowledgeBase.brands), true);
+
+  // 品牌限定未命中时，全局回退
+  if (cands.length === 0 && hint) {
+    cands = collect(Object.keys(knowledgeBase.brands), true);
+  }
+  if (cands.length === 0) return null;
+
+  // 优先覆盖输入更靠后的匹配（五菱缤果S → 缤果S 优于 五菱缤果），其次更长车系名
+  cands.sort((a, b) => b.end - a.end || b.len - a.len);
+  const bestLen = cands[0].len;
+  const top = cands.filter((c) => c.len === bestLen);
+  // 同一最长车系名若跨品牌，brand 置空；不同车系同长则取第一条（品牌限定下通常唯一）
+  const series = top[0].series;
+  const sameSeriesBrands = new Set(
+    top.filter((c) => c.series === series).map((c) => c.brand)
+  );
+  if (sameSeriesBrands.size === 1) {
+    return { series, brand: [...sameSeriesBrands][0] };
+  }
+  const resolved = resolveBrandFromSeries(series);
+  return { series, brand: resolved };
 }
 
 /**

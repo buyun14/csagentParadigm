@@ -1,5 +1,5 @@
 import type { IntentType } from './types';
-import { resolveBrand, resolveType, resolvePower } from './knowledge-base';
+import { resolveBrand, resolveType, resolvePower, matchSeriesFromText } from './knowledge-base';
 import { correctAsrText } from './asr-corrections';
 
 // 意图识别结果
@@ -22,6 +22,9 @@ const agreeWords = [
   '好吧', '嗯好', '好好好', 'ok', 'OK', '行嘞',
   '考虑', '可以考虑', '有兴趣',
 ];
+
+/** 单字/弱肯定词：禁止子串误伤（如「旅行者」含「行」） */
+const weakAgreeWords = new Set(['好', '行', '对', '中', '嗯', 'ok', 'OK']);
 
 // 否定词（注意：单字“没”易误伤“有没有/有没有考虑”等疑问句，已移除，由“没有”等双字词覆盖）
 export const disagreeWords = [
@@ -66,10 +69,10 @@ const cities = [
   '昆明', '宁波', '合肥', '佛山', '厦门', '哈尔滨', '济南', '温州',
   '大连', '贵阳', '南宁', '石家庄', '太原', '南昌', '金华', '常州',
   '泉州', '嘉兴', '南通', '中山', '惠州', '珠海', '徐州', '海口',
-  '兰州', '呼和浩特',
+  '兰州', '呼和浩特', '保定', '开封', '唐山', '廊坊', '沧州', '邯郸',
 ];
 
-// 时间表达
+// 时间表达（购车时间口径）
 const timePatterns = [
   { regex: /最近|这几天|这周|本周/, value: '最近' },
   { regex: /下个月|下月/, value: '下个月' },
@@ -84,6 +87,13 @@ const timePatterns = [
   { regex: /快了|马上|尽快|近期/, value: '近期' },
   { regex: /还早|不着急|慢慢看|先看看/, value: '不着急' },
   { regex: /暑假|寒假/, value: '' },
+  // 相对天数/周：半个月以后、两周内等
+  { regex: /半个多?月(?:以后|之后|后)?|两周(?:以?后|内)?|十几天|十几号/, value: '半个月后' },
+  { regex: /(\d{1,2})\s*天(?:以?后|内)?/, value: '' },
+  // 已看车：视为合法购车时间表达，推进授权/姓氏
+  { regex: /已经看过|已看过|看过车|看过了|已经去看过|已看车/, value: '已看车' },
+  // 价格犹豫：记为时间槽，避免与「问价」死锁
+  { regex: /看价格|看价钱|价格合适再|等价格|看价格再说/, value: '看价格' },
 ];
 
 // 姓氏识别
@@ -128,13 +138,13 @@ const surnames = [
   '公', '欧阳', '司马', '上官', '诸葛', '东方', '皇甫', '令狐',
 ];
 
-// 超范围问题关键词
+// 超范围问题关键词（「已看车/看价格」已由时间槽承接，不在此拦截）
 const outOfScopePatterns = [
   /多少钱|什么价|价格|报价|落地价|全款|贷款|分期|月供/,
   /优惠|折扣|降价|促销|活动|补贴/,
   /配置|参数|续航|马力|扭矩|排量/,
   /保养|维修|售后|保修|质保/,
-  /试驾|体验|看车/,
+  /试驾|体验|预约看车|想看车/,
   /保险|上牌|购置税/,
   /油耗|电耗|充电/,
   /自动|手动|挡|变速箱/,
@@ -143,6 +153,19 @@ const outOfScopePatterns = [
   /二手车|置换|旧车/,
   /现车|提车|等车|交付/,
 ];
+
+/** 弱肯定仅整句命中；强肯定允许短句包含 */
+function matchesAgree(text: string): boolean {
+  if (text.length > 8) return false;
+  for (const word of agreeWords) {
+    if (weakAgreeWords.has(word)) {
+      if (text === word) return true;
+      continue;
+    }
+    if (text === word || text.includes(word)) return true;
+  }
+  return false;
+}
 
 /**
  * 意图识别
@@ -194,7 +217,7 @@ export function recognizeIntent(input: string): IntentResult {
     }
   }
 
-  // 提取时间
+  // 提取时间（购车时间）
   for (const tp of timePatterns) {
     const match = text.match(tp.regex);
     if (match) {
@@ -244,26 +267,13 @@ export function recognizeIntent(input: string): IntentResult {
     entities.phoneTail = text;
   }
 
-  // 提取车型（品牌+系列组合，如ES8、Model 3等）
-  // 注意：知识库已扩展到 266 品牌/1951 车系，但此处保持静态 5 品牌——
-  // 项目决策：知识库仅存品牌+车系数据，不做冗余匹配增强（避免误报与维护负担）
-  const seriesPatterns: Record<string, string[]> = {
-    '蔚来': ['ET5', 'ET7', 'ES6', 'ES7', 'ES8', 'EC6'],
-    '比亚迪': ['汉', '秦', '宋', '唐', '海豚'],
-    '理想': ['L7', 'L8', 'L9', 'MEGA'],
-    '特斯拉': ['Model 3', 'Model Y', 'Model S', 'Model X', 'model3', 'modely', 'models', 'modelx'],
-    '小鹏': ['P7', 'G6', 'G9', 'X9'],
-  };
-
-  for (const [brandName, seriesList] of Object.entries(seriesPatterns)) {
-    for (const series of seriesList) {
-      if (text.toLowerCase().includes(series.toLowerCase())) {
-        entities.series = series;
-        entities.brand = brandName;
-        break;
-      }
+  // 提取车系：走全量知识库（品牌已识别时优先在该品牌下最长匹配）
+  const seriesHit = matchSeriesFromText(text, entities.brand || null);
+  if (seriesHit) {
+    entities.series = seriesHit.series;
+    if (seriesHit.brand && !entities.brand) {
+      entities.brand = seriesHit.brand;
     }
-    if (entities.series) break;
   }
 
   // 4. 判断意图
@@ -302,6 +312,14 @@ export function recognizeIntent(input: string): IntentResult {
     }
   }
 
+  // 有实体提取到 → 优先于超范围/肯定（避免「已看车」被看车类超范围吃掉、「旅行者」被「行」误判）
+  if (entities.surname) return { intent: 'confirm_surname', entities, confidence: 0.9 };
+  if (entities.city) return { intent: 'confirm_city', entities, confidence: 0.9 };
+  if (entities.timing) return { intent: 'confirm_time', entities, confidence: 0.9 };
+  if (entities.series) return { intent: 'confirm_model', entities, confidence: 0.9 };
+  if (entities.brand && !entities.series) return { intent: 'confirm_brand', entities, confidence: 0.85 };
+  if (entities.vehicleType || entities.powerType) return { intent: 'filter_vehicle', entities, confidence: 0.8 };
+
   // 超范围问题
   for (const pattern of outOfScopePatterns) {
     if (pattern.test(text)) {
@@ -310,21 +328,9 @@ export function recognizeIntent(input: string): IntentResult {
   }
 
   // 肯定/同意
-  if (text.length <= 8) {
-    for (const word of agreeWords) {
-      if (text === word || text.includes(word)) {
-        return { intent: 'agree', entities, confidence: 0.8 };
-      }
-    }
+  if (matchesAgree(text)) {
+    return { intent: 'agree', entities, confidence: 0.8 };
   }
-
-  // 有实体提取到 → 根据实体类型判断
-  if (entities.surname) return { intent: 'confirm_surname', entities, confidence: 0.9 };
-  if (entities.city) return { intent: 'confirm_city', entities, confidence: 0.9 };
-  if (entities.timing) return { intent: 'confirm_time', entities, confidence: 0.9 };
-  if (entities.series) return { intent: 'confirm_model', entities, confidence: 0.9 };
-  if (entities.brand && !entities.series) return { intent: 'confirm_brand', entities, confidence: 0.85 };
-  if (entities.vehicleType || entities.powerType) return { intent: 'filter_vehicle', entities, confidence: 0.8 };
 
   // 请求推荐
   if (/推荐|建议|帮我选|你觉得|哪个好的/.test(text)) {

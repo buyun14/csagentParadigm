@@ -24,8 +24,13 @@ describe('prompt-slim 构建', () => {
     expect(p).toContain('收集目标仅');
     // 称谓禁令：不猜测性别
     expect(p).toContain('严禁输出"某先生"');
-    // 车系已给出后不追问版本/变体
-    expect(p).toContain('车系已给出后不要追问版本/变体/偏好');
+    // 车系已给出后不要再列全系/追问版本
+    expect(p).toContain('车系已给出后不要再列全系');
+    // 严禁索要手机号
+    expect(p).toContain('严禁索要手机号');
+    // 购车口径
+    expect(p).toContain('购车城市');
+    expect(p).toContain('购车时间');
   });
 
   it('buildSlimPrompt 要求返回 entities（快通道即时回填槽位/品牌反推）', () => {

@@ -100,6 +100,64 @@ describe('recognizeIntent 意图识别', () => {
     expect(r.entities.timing).toBe('今年');
   });
 
+  it('时间确认：半个月以后 → confirm_time', () => {
+    const r = recognizeIntent('半个月以后');
+    expect(r.intent).toBe('confirm_time');
+    expect(r.entities.timing).toBe('半个月后');
+  });
+
+  it('时间确认：已看过车 → confirm_time（已看车）', () => {
+    const r = recognizeIntent('看车的话我已经去看过了');
+    expect(r.intent).toBe('confirm_time');
+    expect(r.entities.timing).toBe('已看车');
+  });
+
+  it('时间确认：看价格吧 → confirm_time（避免问价死锁）', () => {
+    const r = recognizeIntent('看价格吧');
+    expect(r.intent).toBe('confirm_time');
+    expect(r.entities.timing).toBe('看价格');
+  });
+
+  it('车系：旅行者 → confirm_model（不因子串「行」误判 agree）', () => {
+    const r = recognizeIntent('旅行者');
+    expect(r.intent).toBe('confirm_model');
+    expect(r.entities.series).toBe('旅行者');
+    expect(r.entities.brand).toBe('捷途');
+  });
+
+  it('车系：五菱缤果S → confirm_model', () => {
+    const r = recognizeIntent('五菱缤果S');
+    expect(r.intent).toBe('confirm_model');
+    expect(r.entities.series).toBe('缤果S');
+    expect(r.entities.brand).toBe('五菱汽车');
+  });
+
+  it('车系：威兰达 → confirm_model + 丰田', () => {
+    const r = recognizeIntent('威兰达');
+    expect(r.intent).toBe('confirm_model');
+    expect(r.entities.series).toBe('威兰达');
+    expect(r.entities.brand).toBe('丰田');
+  });
+
+  it('ASR：维兰达 → 威兰达', () => {
+    const r = recognizeIntent('维兰达');
+    expect(r.intent).toBe('confirm_model');
+    expect(r.entities.series).toBe('威兰达');
+  });
+
+  it('ASR：送plus → 宋PLUS（不误识秦PLUS）', () => {
+    const r = recognizeIntent('送plus');
+    expect(r.intent).toBe('confirm_model');
+    expect(r.entities.series).toBe('宋PLUS');
+    expect(r.entities.brand).toBe('比亚迪');
+  });
+
+  it('城市：保定 → confirm_city', () => {
+    const r = recognizeIntent('我在保定');
+    expect(r.intent).toBe('confirm_city');
+    expect(r.entities.city).toBe('保定');
+  });
+
   it('姓氏确认：我姓张 → confirm_surname', () => {
     const r = recognizeIntent('我姓张');
     expect(r.intent).toBe('confirm_surname');

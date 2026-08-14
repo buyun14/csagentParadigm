@@ -40,6 +40,9 @@ const seriesCorrections: AsrCorrectionRule[] = [
   { pattern: /四七五/g, replacement: 'CT5', note: '凯迪拉克四七五=CT5' },
   { pattern: /小米舒淇|小米数七|小米数气/g, replacement: '小米 SU7', note: '小米舒淇/数七=小米 SU7' },
   { pattern: /小米逾期|小米语气/g, replacement: '小米 YU7', note: '小米逾期/语气=小米 YU7' },
+  // 比亚迪宋 PLUS 同音「送」；丰田威兰达近音「维」
+  { pattern: /送\s*(plus|PLUS|Plus)/g, replacement: '宋PLUS', note: '送plus=宋PLUS（ASR 同音）' },
+  { pattern: /维兰达/g, replacement: '威兰达', note: '维兰达=威兰达' },
   { pattern: /su7|yu7/g, replacement: (m) => m.toUpperCase(), note: '小写字母转大写（su7→SU7）' },
 ];
 
