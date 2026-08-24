@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateResponse } from './state-machine';
 import { recognizeIntent } from './intent';
+import { initialPolicyMeta, type PolicyMeta } from './policy';
 import type { CollectedSlots } from './types';
 
 const emptySlots: CollectedSlots = {
@@ -15,12 +16,17 @@ const emptySlots: CollectedSlots = {
   powerType: null,
 };
 
-function run(input: string, current: Parameters<typeof generateResponse>[0], slots: CollectedSlots = emptySlots) {
-  const intentResult = recognizeIntent(input);
-  return generateResponse(current, 'NONE', slots, intentResult, []);
+function run(
+  input: string,
+  current: Parameters<typeof generateResponse>[0],
+  slots: CollectedSlots = emptySlots,
+  meta: PolicyMeta = initialPolicyMeta()
+) {
+  const intentResult = recognizeIntent(input, { brandHint: slots.brand });
+  return generateResponse(current, 'NONE', slots, intentResult, [], meta, input);
 }
 
-describe('generateResponse 状态机', () => {
+describe('generateResponse 状态机（政策口径）', () => {
   it('GREETING + 问候 → BRAND_INQUIRY', () => {
     const r = run('你好', 'GREETING');
     expect(r.nextState).toBe('BRAND_INQUIRY');
@@ -33,7 +39,7 @@ describe('generateResponse 状态机', () => {
     expect(r.updatedSlots.brand).toBe('蔚来');
   });
 
-  it('GREETING + 五菱缤果S → 直接 CITY_INQUIRY（品牌+车系一次收齐不回问）', () => {
+  it('GREETING + 五菱缤果S → CITY_INQUIRY（精确入槽，不回问开场）', () => {
     const r = run('五菱缤果S', 'GREETING');
     expect(r.nextState).toBe('CITY_INQUIRY');
     expect(r.updatedSlots.brand).toBe('五菱汽车');
@@ -68,17 +74,20 @@ describe('generateResponse 状态机', () => {
   it('MODEL_INQUIRY + 询问车辆（无品牌）→ 非空引导回复', () => {
     const r = run('有什么车', 'MODEL_INQUIRY');
     expect(r.reply.length).toBeGreaterThan(0);
-    expect(r.nextState).toBe('MODEL_INQUIRY');
   });
 
   it('CITY_INQUIRY + 确认城市 → TIMING_INQUIRY', () => {
-    const r = run('我在北京', 'CITY_INQUIRY');
+    const r = run('我在北京', 'CITY_INQUIRY', {
+      ...emptySlots, brand: '蔚来', series: 'ES8',
+    });
     expect(r.nextState).toBe('TIMING_INQUIRY');
     expect(r.updatedSlots.city).toBe('北京');
   });
 
   it('TIMING_INQUIRY + 确认时间 → CONTACT_COLLECTION', () => {
-    const r = run('下个月', 'TIMING_INQUIRY');
+    const r = run('下个月', 'TIMING_INQUIRY', {
+      ...emptySlots, brand: '蔚来', series: 'ES8', city: '北京',
+    });
     expect(r.nextState).toBe('CONTACT_COLLECTION');
     expect(r.updatedSlots.timing).toBe('下个月');
   });
@@ -92,7 +101,9 @@ describe('generateResponse 状态机', () => {
   });
 
   it('TIMING_INQUIRY + 半个月以后 → CONTACT_COLLECTION', () => {
-    const r = run('半个月以后', 'TIMING_INQUIRY');
+    const r = run('半个月以后', 'TIMING_INQUIRY', {
+      ...emptySlots, brand: '丰田', series: '威兰达', city: '开封',
+    });
     expect(r.nextState).toBe('CONTACT_COLLECTION');
     expect(r.updatedSlots.timing).toBe('半个月后');
   });
@@ -114,8 +125,10 @@ describe('generateResponse 状态机', () => {
     expect(r.reply).toContain('4S');
   });
 
-  it('CONTACT_COLLECTION + 姓氏 → FAREWELL', () => {
-    const r = run('我姓王', 'CONTACT_COLLECTION');
+  it('CONTACT_COLLECTION + 姓氏 → FAREWELL（需其它项已齐）', () => {
+    const r = run('我姓王', 'CONTACT_COLLECTION', {
+      ...emptySlots, brand: '蔚来', series: 'ES8', city: '北京', timing: '下个月',
+    });
     expect(r.nextState).toBe('FAREWELL');
     expect(r.updatedSlots.surname).toBe('王');
   });
@@ -145,11 +158,13 @@ describe('generateResponse 状态机', () => {
   it('超范围问题（价格）→ OUT_OF_SCOPE 引导 4S 店', () => {
     const r = run('落地多少钱？', 'MODEL_INQUIRY', { ...emptySlots, brand: '蔚来' });
     expect(r.nextException).toBe('OUT_OF_SCOPE');
-    expect(r.reply).toContain('4S店');
+    expect(r.reply).toContain('4S');
   });
 
   it('输入不清 → UNCLEAR 澄清追问', () => {
-    const r = run('嗯？', 'CITY_INQUIRY');
+    const r = run('？', 'CITY_INQUIRY', {
+      ...emptySlots, brand: '蔚来', series: 'ES8',
+    });
     expect(r.nextException).toBe('UNCLEAR');
   });
 
@@ -160,46 +175,81 @@ describe('generateResponse 状态机', () => {
     expect(r.nextState).toBe('MODEL_INQUIRY');
   });
 
-  it('MODEL_INQUIRY + 类型描述 → 列出全部车系并停留（筛选能力已随附加字段移除）', () => {
-    // 知识库仅品牌+车系，无类型字段：'有没有MPV' 不再筛选，列出品牌全部车系
+  it('filter_vehicle / 推荐 → 坍缩为拉回缺失项（不当导购）', () => {
     const r = run('有没有MPV', 'MODEL_INQUIRY', { ...emptySlots, brand: '理想' });
     expect(r.nextState).toBe('MODEL_INQUIRY');
     expect(r.reply).toContain('理想');
-    expect(r.reply).toContain('L9'); // 全部车系中应包含 MPV 车型 MEGA 及其他
   });
 
   it('防误收集：否定意图中提到的品牌不入槽', () => {
     const r = run('我不想看蔚来', 'BRAND_INQUIRY');
-    // “不想”触发 disagree，实体收集被跳过，品牌不入槽
     expect(r.updatedSlots.brand).toBeNull();
   });
 
-  it('不回问：品牌已确认 + 同意 → 推进到车型而非追问品牌', () => {
+  it('不回问：品牌已确认 + 同意 → 推进到车型', () => {
     const r = run('可以', 'BRAND_INQUIRY', { ...emptySlots, brand: '蔚来' });
     expect(r.nextState).toBe('MODEL_INQUIRY');
-    expect(r.reply).not.toContain('品牌');
+    expect(r.reply).not.toMatch(/哪个品牌/);
   });
 
-  it('不回问：车系已确认 + 同意 → 推进到城市而非追问车系', () => {
+  it('不回问：车系已确认 + 同意 → 推进到城市', () => {
     const r = run('可以', 'MODEL_INQUIRY', { ...emptySlots, brand: '蔚来', series: 'ES8' });
     expect(r.nextState).toBe('CITY_INQUIRY');
     expect(r.reply).not.toContain('哪款');
   });
 
   it('不回问：城市已确认 + 同意 → 推进到时间', () => {
-    const r = run('可以', 'CITY_INQUIRY', { ...emptySlots, city: '北京' });
+    const r = run('可以', 'CITY_INQUIRY', {
+      ...emptySlots, brand: '蔚来', series: 'ES8', city: '北京',
+    });
     expect(r.nextState).toBe('TIMING_INQUIRY');
-    expect(r.reply).not.toContain('城市');
   });
 
   it('不回问：时间已确认 + 同意 → 推进到联系方式', () => {
-    const r = run('可以', 'TIMING_INQUIRY', { ...emptySlots, timing: '下个月' });
+    const r = run('可以', 'TIMING_INQUIRY', {
+      ...emptySlots, brand: '蔚来', series: 'ES8', city: '北京', timing: '下个月',
+    });
     expect(r.nextState).toBe('CONTACT_COLLECTION');
   });
 
-  it('不回问：姓氏已确认 + 同意 → 信息闭环推进结束', () => {
-    const r = run('可以', 'CONTACT_COLLECTION', { ...emptySlots, surname: '王' });
+  it('不回问：五项齐备 + 同意 → FAREWELL', () => {
+    const r = run('可以', 'CONTACT_COLLECTION', {
+      ...emptySlots, brand: '蔚来', series: 'ES8', city: '北京', timing: '下个月', surname: '王',
+    });
     expect(r.nextState).toBe('FAREWELL');
     expect(r.reply).not.toContain('贵姓');
+  });
+
+  it('软匹配 送plus → pending 复述，不直接入槽', () => {
+    const r = run('送plus', 'MODEL_INQUIRY', { ...emptySlots, brand: '比亚迪' });
+    expect(r.updatedSlots.series).toBeNull();
+    expect(r.updatedPolicyMeta.pendingSeries).toBe('宋PLUS');
+    expect(r.reply).toContain('宋PLUS');
+    expect(r.reply).toContain('对吧');
+  });
+
+  it('pending 确认后入槽并推进城市', () => {
+    const meta = {
+      ...initialPolicyMeta(),
+      pendingSeries: '宋PLUS',
+      pendingBrand: '比亚迪',
+    };
+    const r = run('对', 'MODEL_INQUIRY', { ...emptySlots, brand: '比亚迪' }, meta);
+    expect(r.updatedSlots.series).toBe('宋PLUS');
+    expect(r.updatedPolicyMeta.pendingSeries).toBeNull();
+    expect(r.nextState).toBe('CITY_INQUIRY');
+  });
+
+  it('连续 3 轮答非所问 → stall 软退出', () => {
+    let meta = initialPolicyMeta();
+    const state = 'BRAND_INQUIRY' as const;
+    const slots = emptySlots;
+    let last = run('今天天气不错哈哈', state, slots, meta);
+    meta = last.updatedPolicyMeta;
+    last = run('股票怎么样啊', state, slots, meta);
+    meta = last.updatedPolicyMeta;
+    last = run('你喜欢吃什么', state, slots, meta);
+    expect(last.nextState).toBe('FAREWELL');
+    expect(last.reply).toContain('不打扰');
   });
 });

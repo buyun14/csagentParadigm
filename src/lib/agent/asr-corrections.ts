@@ -1,11 +1,12 @@
 /**
- * ASR 谐音/热词纠错词表（从老系统节点提示词"热词与纠错词典"技能提取）
+ * ASR 结构型纠错（字母/数字/高置信热词）
  *
- * 电话外呼场景下，客户输入多为语音转文字，存在大量同音字/近音字/字母数字谐音。
- * 识别流程：先做文本归一化（correctAsrText），再走实体提取/意图识别。
+ * 设计分层（不要把所有中文谐音堆进本文件）：
+ * 1. 本模块：仅处理规则引擎难以泛化的结构模式（一十八→ES8、毛豆歪→Model Y、品牌热词）。
+ * 2. series-soft-match + knowledge-base：中文近音/错字走「车系列表内编辑距离+同音簇」软匹配。
+ * 3. prompt-slim：告诉 LLM 输入是 ASR、必须在品牌车系列表内纠到标准名（覆盖长尾）。
  *
- * 注意：部分规则（如 文件→问界、未来→蔚来）在通用语境下有歧义，
- * 此处按老系统 ASR 激进纠错策略原样保留，汽车营销场景下命中率远高于误伤率。
+ * 中文一对一映射（送plus、维兰达）已移除——由软匹配与 Prompt 纪律承接。
  */
 
 export interface AsrCorrectionRule {
@@ -15,19 +16,19 @@ export interface AsrCorrectionRule {
   note?: string;
 }
 
-/** 品牌/车系谐音纠错 */
+/** 品牌高置信热词（老系统遗留，误伤率低） */
 const brandCorrections: AsrCorrectionRule[] = [
-  { pattern: /未来|蔚莱/g, replacement: '蔚来', note: '未来/蔚莱=蔚来（老系统热词，ASR 激进纠错）' },
+  { pattern: /未来|蔚莱/g, replacement: '蔚来', note: '未来/蔚莱=蔚来（老系统热词）' },
   { pattern: /笨田/g, replacement: '本田', note: '笨田=本田' },
   { pattern: /保时姐|保时洁/g, replacement: '保时捷', note: '保时姐=保时捷' },
   { pattern: /比亚滴|比哑滴/g, replacement: '比亚迪', note: '比亚滴=比亚迪' },
   { pattern: /位牌|魏派|魏牌(?![高])/g, replacement: '魏牌', note: '位牌=魏牌' },
   { pattern: /吉利新苑/g, replacement: '吉利星愿', note: '吉利新苑=吉利星愿' },
-  { pattern: /文件|文具/g, replacement: '问界', note: '文件/文具=问界（ASR 激进纠错）' },
+  { pattern: /文件|文具/g, replacement: '问界', note: '文件/文具=问界（老系统热词）' },
   { pattern: /小彭|小朋/g, replacement: '小鹏', note: '小彭/小朋=小鹏' },
 ];
 
-/** 车型字母+数字谐音纠错（核心难点） */
+/** 字母+数字结构谐音（软匹配覆盖不了） */
 const seriesCorrections: AsrCorrectionRule[] = [
   { pattern: /一十八|一艾斯八|一s八/g, replacement: 'ES8', note: '一十八/一艾斯八=ES8' },
   { pattern: /一十六|一艾斯六|一s六/g, replacement: 'ES6', note: '一十六/一艾斯六=ES6' },
@@ -40,9 +41,6 @@ const seriesCorrections: AsrCorrectionRule[] = [
   { pattern: /四七五/g, replacement: 'CT5', note: '凯迪拉克四七五=CT5' },
   { pattern: /小米舒淇|小米数七|小米数气/g, replacement: '小米 SU7', note: '小米舒淇/数七=小米 SU7' },
   { pattern: /小米逾期|小米语气/g, replacement: '小米 YU7', note: '小米逾期/语气=小米 YU7' },
-  // 比亚迪宋 PLUS 同音「送」；丰田威兰达近音「维」
-  { pattern: /送\s*(plus|PLUS|Plus)/g, replacement: '宋PLUS', note: '送plus=宋PLUS（ASR 同音）' },
-  { pattern: /维兰达/g, replacement: '威兰达', note: '维兰达=威兰达' },
   { pattern: /su7|yu7/g, replacement: (m) => m.toUpperCase(), note: '小写字母转大写（su7→SU7）' },
 ];
 
@@ -50,7 +48,7 @@ const seriesCorrections: AsrCorrectionRule[] = [
 const allCorrections: AsrCorrectionRule[] = [...brandCorrections, ...seriesCorrections];
 
 /**
- * 对 ASR 文本做谐音/热词归一化
+ * 对 ASR 文本做结构型归一化（中文近音请依赖软匹配/LLM）
  */
 export function correctAsrText(input: string): string {
   let text = input.trim();

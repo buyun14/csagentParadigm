@@ -28,16 +28,12 @@ describe('ASR 谐音纠错 correctAsrText', () => {
     expect(correctAsrText('su7')).toBe('SU7');
   });
 
-  it('车型谐音：送plus → 宋PLUS', () => {
-    expect(correctAsrText('送plus')).toBe('宋PLUS');
-    expect(correctAsrText('送 PLUS')).toBe('宋PLUS');
+  it('中文近音不再走词表（交给软匹配）：送plus/维兰达保持原样', () => {
+    expect(correctAsrText('送plus')).toBe('送plus');
+    expect(correctAsrText('维兰达')).toBe('维兰达');
   });
 
-  it('车型谐音：维兰达 → 威兰达', () => {
-    expect(correctAsrText('维兰达')).toBe('威兰达');
-  });
-
-  it('无谐音文本保持不变', () => {
+  it('无结构谐音文本保持不变', () => {
     expect(correctAsrText('我想了解一下购车优惠')).toBe('我想了解一下购车优惠');
   });
 
@@ -64,6 +60,20 @@ describe('ASR 纠错与意图识别集成', () => {
   it('“比亚滴”识别为比亚迪（confirm_brand）', () => {
     const r = recognizeIntent('我想看比亚滴');
     expect(r.intent).toBe('confirm_brand');
+    expect(r.entities.brand).toBe('比亚迪');
+  });
+
+  it('近音软匹配：维兰达 → 威兰达（不依赖 ASR 词表）', () => {
+    const r = recognizeIntent('维兰达');
+    expect(r.intent).toBe('confirm_model');
+    expect(r.entities.series).toBe('威兰达');
+    expect(r.entities.brand).toBe('丰田');
+  });
+
+  it('近音软匹配：送plus → 宋PLUS（品牌 hint）', () => {
+    const r = recognizeIntent('送plus', { brandHint: '比亚迪' });
+    expect(r.intent).toBe('confirm_model');
+    expect(r.entities.series).toBe('宋PLUS');
     expect(r.entities.brand).toBe('比亚迪');
   });
 });

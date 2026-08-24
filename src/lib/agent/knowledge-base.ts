@@ -1,5 +1,6 @@
 import type { KnowledgeBase, QueryParams, QueryResult, SeriesInfo } from './types';
 import { vehicleBrandSeries } from './vehicle-brands.generated';
+import { softMatchSeriesAmong } from './series-soft-match';
 
 // 品牌归一化：xlsx 与命名不一致时合并为同一品牌（'理想汽车' 在 xlsx、'理想' 在手写表）
 const brandMerges: Record<string, string> = {
@@ -267,7 +268,7 @@ export function resolveBrandFromSeries(series: string): string | null {
 export function matchSeriesFromText(
   text: string,
   brandHint?: string | null
-): { series: string; brand: string | null } | null {
+): { series: string; brand: string | null; soft: boolean } | null {
   const raw = (text || '').trim();
   if (!raw) return null;
   const lower = raw.toLowerCase();
@@ -321,11 +322,15 @@ export function matchSeriesFromText(
       ? collect([hint], true)
       : collect(Object.keys(knowledgeBase.brands), true);
 
-  // 品牌限定未命中时，全局回退
+  // 品牌限定未命中时，全局回退（精确匹配）
   if (cands.length === 0 && hint) {
     cands = collect(Object.keys(knowledgeBase.brands), true);
   }
-  if (cands.length === 0) return null;
+  // 精确未命中 → 近音软匹配（标 soft:true，由 EntityGate 决定是否 pending）
+  if (cands.length === 0) {
+    const soft = softResolveSeriesFromText(raw, hint);
+    return soft ? { ...soft, soft: true } : null;
+  }
 
   // 优先覆盖输入更靠后的匹配（五菱缤果S → 缤果S 优于 五菱缤果），其次更长车系名
   cands.sort((a, b) => b.end - a.end || b.len - a.len);
@@ -337,10 +342,64 @@ export function matchSeriesFromText(
     top.filter((c) => c.series === series).map((c) => c.brand)
   );
   if (sameSeriesBrands.size === 1) {
-    return { series, brand: [...sameSeriesBrands][0] };
+    return { series, brand: [...sameSeriesBrands][0], soft: false };
   }
   const resolved = resolveBrandFromSeries(series);
-  return { series, brand: resolved };
+  return { series, brand: resolved, soft: false };
+}
+
+/**
+ * 精确匹配失败后的近音软匹配：优先品牌限定，再全局唯一解。
+ * 用于 ASR 错字（维兰达→威兰达、送plus→宋PLUS），不依赖逐条谐音词表。
+ */
+export function softResolveSeriesFromText(
+  text: string,
+  brandHint?: string | null
+): { series: string; brand: string | null } | null {
+  const raw = (text || '').trim().replace(/\s+/g, '');
+  if (raw.length < 2) return null;
+
+  const hint = brandHint ? resolveBrand(brandHint) || brandHint : null;
+  const toPairs = (brands: string[]) => {
+    const pairs: Array<{ brand: string; series: string }> = [];
+    for (const brand of brands) {
+      const map = knowledgeBase.brands[brand]?.series;
+      if (!map) continue;
+      for (const series of Object.keys(map)) {
+        pairs.push({ brand, series });
+      }
+    }
+    return pairs;
+  };
+
+  // 短句整段当作车系候选（去常见前缀/语气）
+  const utterance = raw
+    .replace(/^(我想看|我看|看看|关注|了解一下|了解)/, '')
+    .replace(/(怎么样|如何|可以吗|吧|呀|啊)$/, '')
+    .trim() || raw;
+
+  // 整句就是品牌名 → 不做软匹配（避免「我看蔚来」被纠成某车系）
+  if (resolveBrand(utterance) && utterance === (resolveBrand(utterance) || '')) {
+    return null;
+  }
+
+  const hasSeriesSuffix = /(PLUS|PRO|MAX|ULTRA|UP|CDM|C-DM|DM-I|DM|EV)$/i.test(utterance);
+  // 全局软匹配门槛更高：需 ≥3 字或带车系后缀，降低品牌名/短词误伤
+  const allowGlobal = utterance.length >= 3 || hasSeriesSuffix;
+
+  if (hint && knowledgeBase.brands[hint]) {
+    const scoped = softMatchSeriesAmong(utterance, toPairs([hint]));
+    if (scoped) return { series: scoped.series, brand: scoped.brand };
+    // 品牌已限定但未命中：不再全局乱撞（除非带明确后缀）
+    if (!hasSeriesSuffix) return null;
+  }
+
+  if (!allowGlobal) return null;
+
+  const global = softMatchSeriesAmong(utterance, toPairs(Object.keys(knowledgeBase.brands)));
+  if (!global) return null;
+  const brand = resolveBrandFromSeries(global.series) || global.brand;
+  return { series: global.series, brand };
 }
 
 /**

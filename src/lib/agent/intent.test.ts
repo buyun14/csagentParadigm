@@ -139,17 +139,23 @@ describe('recognizeIntent 意图识别', () => {
     expect(r.entities.brand).toBe('丰田');
   });
 
-  it('ASR：维兰达 → 威兰达', () => {
+  it('ASR：维兰达 → 威兰达（软匹配）', () => {
     const r = recognizeIntent('维兰达');
     expect(r.intent).toBe('confirm_model');
     expect(r.entities.series).toBe('威兰达');
   });
 
-  it('ASR：送plus → 宋PLUS（不误识秦PLUS）', () => {
-    const r = recognizeIntent('送plus');
+  it('ASR：送plus → 宋PLUS（品牌 hint + 软匹配，不误识秦PLUS）', () => {
+    const r = recognizeIntent('送plus', { brandHint: '比亚迪' });
     expect(r.intent).toBe('confirm_model');
     expect(r.entities.series).toBe('宋PLUS');
     expect(r.entities.brand).toBe('比亚迪');
+  });
+
+  it('ASR：送plus 无品牌时也可靠同音簇落到宋PLUS', () => {
+    const r = recognizeIntent('送plus');
+    expect(r.intent).toBe('confirm_model');
+    expect(r.entities.series).toBe('宋PLUS');
   });
 
   it('城市：保定 → confirm_city', () => {

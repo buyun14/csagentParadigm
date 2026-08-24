@@ -15,6 +15,13 @@ import { generateResponse } from './state-machine';
 import { checkCache } from './cache';
 import { buildConversationSummary } from './summary';
 import { resolveBrand, resolveBrandFromSeries } from './knowledge-base';
+import {
+  isInfoComplete,
+  advanceState,
+  stateFromSlots,
+  initialPolicyMeta,
+  normalizeTiming,
+} from './policy';
 
 // 初始槽位状态
 const initialSlots: CollectedSlots = {
@@ -88,16 +95,7 @@ function normalizeEntityKeys(entities: Record<string, string>): Record<string, s
   return normalized;
 }
 
-// 主流程状态推进顺序（用于校验 LLM 返回的状态迁移）
-const STATE_ORDER: Record<MainDialogState, number> = {
-  GREETING: 0,
-  BRAND_INQUIRY: 1,
-  MODEL_INQUIRY: 2,
-  CITY_INQUIRY: 3,
-  TIMING_INQUIRY: 4,
-  CONTACT_COLLECTION: 5,
-  FAREWELL: 6,
-};
+// 主流程状态推进顺序已收口到 policy.advanceState / stateFromSlots
 
 // 各 intent 至少应推进到的状态（防止 LLM 状态跳回/停滞导致流程倒退）
 // 注意：confirm_surname 不在此设推进下限——客户可能在流程早期随口报姓氏，
@@ -113,20 +111,12 @@ const INTENT_MIN_STATE: Partial<Record<string, MainDialogState>> = {
   farewell: 'FAREWELL',
 };
 
-/** 信息闭环条件：收集目标五项（品牌、车系、城市、看车时间、姓氏）全部齐备 */
-function isInfoComplete(slots: CollectedSlots): boolean {
-  return Boolean(
-    slots.brand && slots.series && slots.city && slots.timing && slots.surname
-  );
-}
+/** 信息闭环条件：五项齐备（政策源） */
+// isInfoComplete 从 policy 导入
 
 /**
  * 业务状态迁移校验（快通道 LLM 的 next_state 只是参考值）：
- * 1. 信息闭环（五项收集目标齐备）→ 强制 FAREWELL；
- * 2. intent 驱动的推进下限（confirm_* 至少推进到对应下一状态）；
- * 3. 不允许倒退到早于当前状态的位置；
- * 4. FAREWELL 为终态，不可回退（当前已是 FAREWELL 时保持）。
- * 取所有候选序位的最大值，保证流程只进不退。
+ * 槽位推导优先 + intent 下限 + 防倒退 + 闭环强制 FAREWELL
  */
 function enforceStateTransition(
   current: MainDialogState,
@@ -134,19 +124,16 @@ function enforceStateTransition(
   intent: string,
   slots: CollectedSlots
 ): MainDialogState {
+  // 政策：槽位推导状态下限优先
+  let next = advanceState(current, slots, rawNext);
   const intentMin = INTENT_MIN_STATE[intent];
-  // 信息闭环：五项收集目标齐备才结束，避免客户早期随口报姓氏导致提前挂断
-  const infoComplete = isInfoComplete(slots);
-  const candidates = [
-    STATE_ORDER[current],
-    STATE_ORDER[rawNext],
-    intentMin !== undefined ? STATE_ORDER[intentMin] : -1,
-    infoComplete ? STATE_ORDER['FAREWELL'] : -1,
-  ];
-  const best = Math.max(...candidates);
-  return (Object.keys(STATE_ORDER) as MainDialogState[]).find(
-    (s) => STATE_ORDER[s] === best
-  )!;
+  if (intentMin) {
+    next = advanceState(next, slots, intentMin);
+  }
+  // 确保不低于槽位应处状态
+  next = advanceState(next, slots, stateFromSlots(slots));
+  void intent;
+  return next;
 }
 
 /** 快通道流式回调接口 */
@@ -203,6 +190,7 @@ export function createInitialState(): AgentState {
     dualChannel: null,
     currentModelConfig: null,
     promptTokenEstimate: null,
+    policyMeta: initialPolicyMeta(),
   };
 }
 
@@ -536,7 +524,7 @@ function updateSlotsFromEntities(
   }
 
   if (entities.city) newSlots.city = entities.city;
-  if (entities.timing) newSlots.timing = entities.timing;
+  if (entities.timing) newSlots.timing = normalizeTiming(entities.timing) || entities.timing;
   if (entities.surname) newSlots.surname = entities.surname;
   if (entities.phoneTail) newSlots.phoneTail = entities.phoneTail;
   if (entities.vehicleType) newSlots.vehicleType = entities.vehicleType;
@@ -707,7 +695,9 @@ function processWithRule(
     timestamp: sendTime,
   };
 
-  const intentResult = recognizeIntent(customerInput);
+  const intentResult = recognizeIntent(customerInput, {
+    brandHint: currentState.collectedSlots.brand,
+  });
   const dialogHistory = currentState.messages
     .slice(-20)
     .map((m) => ({ role: m.role, content: m.content }));
@@ -717,7 +707,9 @@ function processWithRule(
     currentState.exceptionState,
     currentState.collectedSlots,
     intentResult,
-    dialogHistory
+    dialogHistory,
+    currentState.policyMeta || initialPolicyMeta(),
+    customerInput
   );
 
   const ruleStartTime = Date.now();
@@ -775,6 +767,7 @@ function processWithRule(
     dualChannel: null,
     currentModelConfig: null,
     promptTokenEstimate: null,
+    policyMeta: response.updatedPolicyMeta,
   };
 
   return { newState, customerMessage, agentMessage };

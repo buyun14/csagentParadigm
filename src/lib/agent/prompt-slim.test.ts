@@ -13,34 +13,27 @@ const history = [
 ];
 
 describe('prompt-slim 构建', () => {
-  it('buildSlimPrompt 注入状态/槽位/知识库', () => {
+  it('buildSlimPrompt 注入状态/槽位/政策口径', () => {
     const p = buildSlimPrompt('MODEL_INQUIRY', slots, history);
     expect(p).toContain('MODEL_INQUIRY');
     expect(p).toContain('品牌:蔚来');
     expect(p).toContain('车系:ES8');
-    expect(p).toContain('蔚来'); // 知识库按当前品牌注入
-    // 提问纪律：最新消息已提信息视为已收集、只问缺失的下一项、收集目标仅 5 项
-    expect(p).toContain('视为已收集');
-    expect(p).toContain('收集目标仅');
-    // 称谓禁令：不猜测性别
-    expect(p).toContain('严禁输出"某先生"');
-    // 车系已给出后不要再列全系/追问版本
-    expect(p).toContain('车系已给出后不要再列全系');
-    // 严禁索要手机号
+    expect(p).toContain('蔚来');
+    expect(p).toContain('外呼线索初筛');
     expect(p).toContain('严禁索要手机号');
-    // 购车口径
     expect(p).toContain('购车城市');
     expect(p).toContain('购车时间');
+    expect(p).toContain('ASR门禁');
+    expect(p).toContain('本轮只问');
+    expect(p).toContain('严禁输出"某先生"');
+    expect(p).toContain('禁止再列全系表');
   });
 
-  it('buildSlimPrompt 要求返回 entities（快通道即时回填槽位/品牌反推）', () => {
+  it('buildSlimPrompt 要求返回 entities', () => {
     const p = buildSlimPrompt('MODEL_INQUIRY', slots, history);
-    // 返回 JSON 含 entities 字段（中文键），供快通道完成后即时回填槽位
     expect(p).toContain('"entities"');
     expect(p).toContain('品牌":"","车系"');
-    // 只给车系未给品牌时，可从知识库推断补全（如汉→比亚迪）
-    expect(p).toContain('品牌可从知识库推断补全');
-    // 称谓禁令保留
+    expect(p).toContain('反推品牌');
     expect(p).toContain('严禁输出');
   });
 
@@ -56,9 +49,8 @@ describe('prompt-slim 构建', () => {
     expect(p).toContain('快通道回复');
     expect(p).toContain('好的，ES8可以的');
     expect(p).toContain('历史摘要');
-    // 实体提取字段与老系统采集字段对应
-    expect(p).toContain('信息授权确认');
     expect(p).toContain('guardrail_check');
+    expect(p).toContain('外呼线索初筛');
   });
 
   it('estimateTokens 中文按 1.5 估算', () => {

@@ -1,0 +1,1694 @@
+# csagentParadigm -> Dify Chatflow DSL
+# 依据 docs/Dify工作流实现方案.md 生成（2026-08-19）
+# 导入步骤：Dify Studio -> 导入 DSL -> 选择本文件
+# 导入后必做：为「意图分类 / 参数提取 / 话术生成」三个模型节点选择你环境里真实的模型（provider/name 当前为占位 tongyi/qwen-plus）
+# 说明：为保证流式输出，参数提取/状态推进/槽位写回全部放在「话术生成 LLM」之前执行，
+#       Answer 节点直接引用 LLM 节点输出（LLM -> Answer 直连），避免中间节点打断 SSE 流式首字。
+app:
+  mode: advanced-chat
+  name: 汽车营销外呼客服Chatflow
+  description: 外呼线索初筛：规则预检 + 意图分类 + 话术生成（纯文本流式）+ 参数提取 + 状态机推进（csagentParadigm 移植）
+  icon: "📞"
+  icon_background: "#E4FBCC"
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: "0.5.0"
+workflow:
+  conversation_variables:
+    - id: "cvar-current-state"
+      name: current_state
+      value_type: string
+      value: "GREETING"
+      description: 当前主状态（GREETING/BRAND_INQUIRY/MODEL_INQUIRY/CITY_INQUIRY/TIMING_INQUIRY/CONTACT_COLLECTION/FAREWELL）
+    - id: "cvar-exception-state"
+      name: exception_state
+      value_type: string
+      value: "NONE"
+      description: 异常标签（OFF_TRACK/ABUSE/OUT_OF_SCOPE/UNCLEAR/NONE）
+    - id: "cvar-brand"
+      name: brand
+      value_type: string
+      value: ""
+      description: 已确认品牌
+    - id: "cvar-series"
+      name: series
+      value_type: string
+      value: ""
+      description: 已确认车系
+    - id: "cvar-model"
+      name: model
+      value_type: string
+      value: ""
+      description: 具体车型（可选）
+    - id: "cvar-city"
+      name: city
+      value_type: string
+      value: ""
+      description: 已确认购车城市
+    - id: "cvar-timing"
+      name: timing
+      value_type: string
+      value: ""
+      description: 已确认购车时间
+    - id: "cvar-surname"
+      name: surname
+      value_type: string
+      value: ""
+      description: 客户姓氏（收集到即闭环 -> FAREWELL）
+    - id: "cvar-phone-tail"
+      name: phone_tail
+      value_type: string
+      value: ""
+      description: 客户主动报的手机尾号（不主动问）
+    - id: "cvar-turn-count"
+      name: turn_count
+      value_type: number
+      value: 0
+      description: 轮次计数
+  environment_variables: []
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: "喂，你好。这边是互联网汽车营销中心的，价格合适的话，您这边考虑过买车吗？给您做一个报价，您参考了解一下哈，您看最近有比较关注哪款车呀？"
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+  graph:
+    edges:
+      - data:
+          sourceType: start
+          targetType: code
+          isInIteration: false
+          isInLoop: false
+        id: "1732000001-1732000002-source-target"
+        source: "1732000001"
+        sourceHandle: source
+        target: "1732000002"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: code
+          targetType: if-else
+          isInIteration: false
+          isInLoop: false
+        id: "1732000002-1732000003-source-target"
+        source: "1732000002"
+        sourceHandle: source
+        target: "1732000003"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: if-else
+          targetType: assigner
+          isInIteration: false
+          isInLoop: false
+        id: "1732000003-1732000004-case-precheck-hit"
+        source: "1732000003"
+        sourceHandle: case-precheck-hit
+        target: "1732000004"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: assigner
+          targetType: answer
+          isInIteration: false
+          isInLoop: false
+        id: "1732000004-1732000005-source-target"
+        source: "1732000004"
+        sourceHandle: source
+        target: "1732000005"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: if-else
+          targetType: question-classifier
+          isInIteration: false
+          isInLoop: false
+        id: "1732000003-1732000006-false"
+        source: "1732000003"
+        sourceHandle: "false"
+        target: "1732000006"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: assigner
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000011-cls-abuse"
+        source: "1732000006"
+        sourceHandle: cls-abuse
+        target: "1732000011"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: assigner
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000013-cls-dislike"
+        source: "1732000006"
+        sourceHandle: cls-dislike
+        target: "1732000013"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: assigner
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000015-cls-farewell"
+        source: "1732000006"
+        sourceHandle: cls-farewell
+        target: "1732000015"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: assigner
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000017-cls-wait"
+        source: "1732000006"
+        sourceHandle: cls-wait
+        target: "1732000017"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-greet"
+        source: "1732000006"
+        sourceHandle: cls-greet
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-agree"
+        source: "1732000006"
+        sourceHandle: cls-agree
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-disagree"
+        source: "1732000006"
+        sourceHandle: cls-disagree
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-confirm-brand"
+        source: "1732000006"
+        sourceHandle: cls-confirm-brand
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-confirm-model"
+        source: "1732000006"
+        sourceHandle: cls-confirm-model
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-confirm-city"
+        source: "1732000006"
+        sourceHandle: cls-confirm-city
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-confirm-time"
+        source: "1732000006"
+        sourceHandle: cls-confirm-time
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-confirm-surname"
+        source: "1732000006"
+        sourceHandle: cls-confirm-surname
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-ask-vehicle"
+        source: "1732000006"
+        sourceHandle: cls-ask-vehicle
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-filter-vehicle"
+        source: "1732000006"
+        sourceHandle: cls-filter-vehicle
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-ask-recommend"
+        source: "1732000006"
+        sourceHandle: cls-ask-recommend
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-out-of-scope"
+        source: "1732000006"
+        sourceHandle: cls-out-of-scope
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-off-track"
+        source: "1732000006"
+        sourceHandle: cls-off-track
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-unclear"
+        source: "1732000006"
+        sourceHandle: cls-unclear
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: question-classifier
+          targetType: parameter-extractor
+          isInIteration: false
+          isInLoop: false
+        id: "1732000006-1732000022-cls-unknown"
+        source: "1732000006"
+        sourceHandle: cls-unknown
+        target: "1732000022"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: assigner
+          targetType: answer
+          isInIteration: false
+          isInLoop: false
+        id: "1732000011-1732000012-source-target"
+        source: "1732000011"
+        sourceHandle: source
+        target: "1732000012"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: assigner
+          targetType: answer
+          isInIteration: false
+          isInLoop: false
+        id: "1732000013-1732000014-source-target"
+        source: "1732000013"
+        sourceHandle: source
+        target: "1732000014"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: assigner
+          targetType: answer
+          isInIteration: false
+          isInLoop: false
+        id: "1732000015-1732000016-source-target"
+        source: "1732000015"
+        sourceHandle: source
+        target: "1732000016"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: assigner
+          targetType: answer
+          isInIteration: false
+          isInLoop: false
+        id: "1732000017-1732000018-source-target"
+        source: "1732000017"
+        sourceHandle: source
+        target: "1732000018"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: parameter-extractor
+          targetType: code
+          isInIteration: false
+          isInLoop: false
+        id: "1732000022-1732000021-source-target"
+        source: "1732000022"
+        sourceHandle: source
+        target: "1732000021"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: code
+          targetType: code
+          isInIteration: false
+          isInLoop: false
+        id: "1732000021-1732000023-source-target"
+        source: "1732000021"
+        sourceHandle: source
+        target: "1732000023"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: code
+          targetType: assigner
+          isInIteration: false
+          isInLoop: false
+        id: "1732000023-1732000024-source-target"
+        source: "1732000023"
+        sourceHandle: source
+        target: "1732000024"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: assigner
+          targetType: llm
+          isInIteration: false
+          isInLoop: false
+        id: "1732000024-1732000025-source-target"
+        source: "1732000024"
+        sourceHandle: source
+        target: "1732000025"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          sourceType: llm
+          targetType: answer
+          isInIteration: false
+          isInLoop: false
+        id: "1732000025-1732000026-source-target"
+        source: "1732000025"
+        sourceHandle: source
+        target: "1732000026"
+        targetHandle: target
+        type: custom
+        zIndex: 0
+    nodes:
+      - data:
+          type: start
+          title: 开始
+          variables: []
+        height: 54
+        id: "1732000001"
+        position:
+          x: 40
+          y: 300
+        positionAbsolute:
+          x: 40
+          y: 300
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: code
+          title: 规则预检（ASR归一化+固定话术）
+          desc: 零LLM：ASR谐音纠错 + 反感/辱骂/等待/告别/纯问候命中即出固定话术
+          variables:
+            - variable: query
+              value_selector:
+                - sys
+                - query
+            - variable: current_state
+              value_selector:
+                - conversation
+                - current_state
+          code_language: python3
+          code: |
+            import re
+
+            def main(query, current_state):
+                text = (query or "").strip()
+
+                # 1) ASR 结构型纠错（对应 asr-corrections.ts；中文近音由软匹配/LLM兜底）
+                corrections = [
+                    ("未来", "蔚来"), ("蔚莱", "蔚来"), ("笨田", "本田"),
+                    ("保时姐", "保时捷"), ("保时洁", "保时捷"),
+                    ("比亚滴", "比亚迪"), ("比哑滴", "比亚迪"),
+                    ("位牌", "魏牌"), ("魏派", "魏牌"),
+                    ("吉利新苑", "吉利星愿"), ("文件", "问界"), ("文具", "问界"),
+                    ("小彭", "小鹏"), ("小朋", "小鹏"),
+                    ("一十八", "ES8"), ("一艾斯八", "ES8"), ("一s八", "ES8"),
+                    ("一十六", "ES6"), ("一艾斯六", "ES6"), ("一s六", "ES6"),
+                    ("e三版", "E300"), ("e三班", "E300"), ("一三百", "E300"),
+                    ("毛豆歪", "Model Y"), ("毛豆y", "Model Y"), ("模特y", "Model Y"), ("model歪", "Model Y"),
+                    ("居老八", "GL8"), ("几十八", "GL8"), ("g老八", "GL8"),
+                    ("莫娜l零三", "MONA L03"), ("莫娜l03", "MONA L03"), ("莫娜零三", "MONA L03"),
+                    ("海斯", "海狮"), ("高三", "高山"), ("四七五", "CT5"),
+                    ("小米舒淇", "小米SU7"), ("小米数七", "小米SU7"), ("小米数气", "小米SU7"),
+                    ("小米逾期", "小米YU7"), ("小米语气", "小米YU7"),
+                ]
+                for src, dst in corrections:
+                    text = text.replace(src, dst)
+                text = re.sub(r"\bsu7\b", "SU7", text)
+                text = re.sub(r"\byu7\b", "YU7", text)
+                text = re.sub(r"\s+", " ", text).strip()
+
+                # 2) 固定意图预检（词表与 intent.ts 一致；顺序：反感 -> 辱骂 -> 等待 -> 告别 -> 纯问候）
+                dislike_words = ["又是推销", "别打了", "不要再打了", "烦不烦", "天天打", "怎么又打", "说了不要", "已经买过了", "不需要谢谢", "别骚扰", "拉黑", "投诉", "举报", "别烦我", "不要打", "烦死了", "骚扰"]
+                abuse_words = ["滚", "傻逼", "sb", "操", "妈的", "去死", "神经病", "有病", "垃圾", "废物", "骗子", "混蛋", "无耻", "不要脸", "恶心", "讨厌", "去你妈", "你妈", "草泥马", "麻痹", "逼", "贱", "蠢", "智障"]
+                wait_words = ["等一下", "等等", "稍等", "等下", "等一会", "先别急", "我想想", "让我想想", "等会", "现在忙", "在开会"]
+                farewell_words = ["再见", "拜拜", "bye", "挂了", "先这样", "就这样", "好的再见", "嗯再见", "谢谢再见"]
+                greet_words = ["喂", "你好", "您好", "嗨", "hi", "hello", "在吗", "在的", "嗯", "嗯嗯", "哦", "哦哦", "啊", "好的"]
+
+                hit = False
+                intent = ""
+                response = ""
+                next_state = current_state or "GREETING"
+                exception = "NONE"
+
+                for w in dislike_words:
+                    if w in text:
+                        hit, intent = True, "dislike"
+                        response = "理解您的感受，那就不打扰了，如果有需要随时联系我们。"
+                        next_state, exception = "FAREWELL", "ABUSE"
+                        break
+                if not hit:
+                    for w in abuse_words:
+                        if w in text:
+                            hit, intent = True, "abuse"
+                            response = "不好意思打扰了，祝您生活愉快，再见。"
+                            next_state, exception = "FAREWELL", "ABUSE"
+                            break
+                if not hit:
+                    for w in wait_words:
+                        if w in text:
+                            hit, intent = True, "wait"
+                            response = "好的，您先忙，不着急。"
+                            break
+                if not hit:
+                    for w in farewell_words:
+                        if w in text:
+                            hit, intent = True, "farewell"
+                            response = "好的，稍后会有专人联系您，祝您生活愉快，再见。"
+                            next_state, exception = "FAREWELL", "NONE"
+                            break
+                if not hit and current_state == "GREETING" and len(text) <= 6:
+                    for w in greet_words:
+                        if w in text:
+                            hit, intent = True, "greet"
+                            response = "喂，你好。这边是互联网汽车营销中心的，价格合适的话，您这边考虑过买车吗？给您做一个报价，您参考了解一下哈，您看最近有比较关注哪款车呀？"
+                            next_state = "BRAND_INQUIRY"
+                            break
+                if not hit and current_state == "FAREWELL":
+                    hit, intent = True, "farewell"
+                    response = "好的，稍后会有专人联系您，祝您生活愉快，再见。"
+                    next_state, exception = "FAREWELL", "NONE"
+
+                return {
+                    "normalized_text": text,
+                    "precheck_result": "hit" if hit else "miss",
+                    "precheck_intent": intent,
+                    "precheck_response": response,
+                    "precheck_next_state": next_state,
+                    "precheck_exception": exception,
+                }
+          outputs:
+            normalized_text:
+              type: string
+            precheck_result:
+              type: string
+            precheck_intent:
+              type: string
+            precheck_response:
+              type: string
+            precheck_next_state:
+              type: string
+            precheck_exception:
+              type: string
+        height: 220
+        id: "1732000002"
+        position:
+          x: 320
+          y: 220
+        positionAbsolute:
+          x: 320
+          y: 220
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: if-else
+          title: 预检是否命中
+          desc: precheck_result == hit 时走固定话术（零LLM）；否则进入语义层
+          logical_operator: and
+          cases:
+            - case_id: case-precheck-hit
+              logical_operator: and
+              conditions:
+                - variable_selector:
+                    - "1732000002"
+                    - precheck_result
+                  comparison_operator: is
+                  value: "hit"
+        height: 126
+        id: "1732000003"
+        position:
+          x: 600
+          y: 240
+        positionAbsolute:
+          x: 600
+          y: 240
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: assigner
+          title: 固定话术-状态写入
+          desc: 写回 next_state/exception/turn_count
+          version: "2"
+          items:
+            - variable_selector:
+                - conversation
+                - current_state
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000002"
+                - precheck_next_state
+            - variable_selector:
+                - conversation
+                - exception_state
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000002"
+                - precheck_exception
+            - variable_selector:
+                - conversation
+                - turn_count
+              input_type: constant
+              operation: "+="
+              value: 1
+        height: 110
+        id: "1732000004"
+        position:
+          x: 880
+          y: 180
+        positionAbsolute:
+          x: 880
+          y: 180
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: answer
+          title: 固定话术回复
+          answer: "{{#1732000002.precheck_response#}}"
+        height: 107
+        id: "1732000005"
+        position:
+          x: 1160
+          y: 180
+        positionAbsolute:
+          x: 1160
+          y: 180
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: question-classifier
+          title: 意图分类（19类）
+          desc: 语义层意图识别；abuse/dislike/farewell/wait 走固定护栏话术，其余进入实体提取
+          query_variable_selector:
+            - "1732000002"
+            - normalized_text
+          model:
+            provider: tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0
+              max_tokens: 100
+          classes:
+            - id: cls-greet
+              name: "问候：你好/喂/在吗/嗨"
+            - id: cls-agree
+              name: "肯定/同意：好的/可以/嗯/是/考虑"
+            - id: cls-disagree
+              name: "否定/拒绝：不需要/不考虑/我不是看蔚来/不考虑分期（注意：是不是/有没有 是疑问不是否定）"
+            - id: cls-confirm-brand
+              name: "客户说出品牌：我看蔚来/比亚迪吧/本田"
+            - id: cls-confirm-model
+              name: "客户说出车系/车型：ES8/汉/Model 3"
+            - id: cls-confirm-city
+              name: "客户说出城市：我在北京/苏州"
+            - id: cls-confirm-time
+              name: "客户说出购车时间：下个月/明年/年底/最近"
+            - id: cls-confirm-surname
+              name: "客户说出姓氏：我姓王/姓张/王先生"
+            - id: cls-ask-vehicle
+              name: "询问有哪些车：有什么车/哪些车型"
+            - id: cls-filter-vehicle
+              name: "按类型/动力筛选：想要SUV/纯电的/七座"
+            - id: cls-ask-recommend
+              name: "求推荐：推荐哪款/帮我选/哪个好"
+            - id: cls-out-of-scope
+              name: "超范围：多少钱/优惠/配置/续航/试驾/二手车/现车"
+            - id: cls-off-track
+              name: "偏离话题：今天天气不错/闲聊"
+            - id: cls-unclear
+              name: "听不清/不清晰：啊/嗯？"
+            - id: cls-abuse
+              name: "辱骂：傻逼/滚/骗子/垃圾"
+            - id: cls-dislike
+              name: "反感/投诉：别打了/骚扰/投诉/举报/烦死了"
+            - id: cls-wait
+              name: "等待：稍等/等一下/我想想/在开会"
+            - id: cls-farewell
+              name: "告别：再见/拜拜/挂了"
+            - id: cls-unknown
+              name: "其他"
+          instruction: "根据客户最新消息与对话上下文，把客户意图归入最合适的一类。客户明确否定（不需要/不考虑/我不是看X/不考虑分期）选 disagree；是不是/有没有 是疑问不是否定。客户说出品牌选 confirm_brand，说出车系选 confirm_model。价格/优惠/配置/续航/试驾/现车/二手车等超出线索采集范围选 out_of_scope。纯闲聊选 off_track。"
+          memory:
+            role_prefix:
+              user: 用户
+              assistant: 客服
+            window:
+              enabled: true
+              size: 4
+          vision:
+            enabled: false
+        height: 320
+        id: "1732000006"
+        position:
+          x: 880
+          y: 480
+        positionAbsolute:
+          x: 880
+          y: 480
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: assigner
+          title: 辱骂-状态写入
+          desc: 语义级辱骂护栏：强制 FAREWELL
+          version: "2"
+          items:
+            - variable_selector:
+                - conversation
+                - current_state
+              input_type: constant
+              operation: over-write
+              value: "FAREWELL"
+            - variable_selector:
+                - conversation
+                - exception_state
+              input_type: constant
+              operation: over-write
+              value: "ABUSE"
+            - variable_selector:
+                - conversation
+                - turn_count
+              input_type: constant
+              operation: "+="
+              value: 1
+        height: 110
+        id: "1732000011"
+        position:
+          x: 1160
+          y: 420
+        positionAbsolute:
+          x: 1160
+          y: 420
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: answer
+          title: 辱骂退出话术
+          answer: "不好意思打扰了，祝您生活愉快，再见。"
+        height: 107
+        id: "1732000012"
+        position:
+          x: 1440
+          y: 420
+        positionAbsolute:
+          x: 1440
+          y: 420
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: assigner
+          title: 反感-状态写入
+          desc: 语义级反感护栏：强制 FAREWELL
+          version: "2"
+          items:
+            - variable_selector:
+                - conversation
+                - current_state
+              input_type: constant
+              operation: over-write
+              value: "FAREWELL"
+            - variable_selector:
+                - conversation
+                - exception_state
+              input_type: constant
+              operation: over-write
+              value: "ABUSE"
+            - variable_selector:
+                - conversation
+                - turn_count
+              input_type: constant
+              operation: "+="
+              value: 1
+        height: 110
+        id: "1732000013"
+        position:
+          x: 1160
+          y: 560
+        positionAbsolute:
+          x: 1160
+          y: 560
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: answer
+          title: 反感退出话术
+          answer: "理解您的感受，那就不打扰了，如果有需要随时联系我们。"
+        height: 107
+        id: "1732000014"
+        position:
+          x: 1440
+          y: 560
+        positionAbsolute:
+          x: 1440
+          y: 560
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: assigner
+          title: 告别-状态写入
+          desc: 告别闭环：FAREWELL
+          version: "2"
+          items:
+            - variable_selector:
+                - conversation
+                - current_state
+              input_type: constant
+              operation: over-write
+              value: "FAREWELL"
+            - variable_selector:
+                - conversation
+                - exception_state
+              input_type: constant
+              operation: over-write
+              value: "NONE"
+            - variable_selector:
+                - conversation
+                - turn_count
+              input_type: constant
+              operation: "+="
+              value: 1
+        height: 110
+        id: "1732000015"
+        position:
+          x: 1160
+          y: 700
+        positionAbsolute:
+          x: 1160
+          y: 700
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: answer
+          title: 告别话术
+          answer: "好的，稍后会有专人联系您，祝您生活愉快，再见。"
+        height: 107
+        id: "1732000016"
+        position:
+          x: 1440
+          y: 700
+        positionAbsolute:
+          x: 1440
+          y: 700
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: assigner
+          title: 等待-状态写入
+          desc: 等待不推进状态，仅计数
+          version: "2"
+          items:
+            - variable_selector:
+                - conversation
+                - exception_state
+              input_type: constant
+              operation: over-write
+              value: "NONE"
+            - variable_selector:
+                - conversation
+                - turn_count
+              input_type: constant
+              operation: "+="
+              value: 1
+        height: 110
+        id: "1732000017"
+        position:
+          x: 1160
+          y: 840
+        positionAbsolute:
+          x: 1160
+          y: 840
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: answer
+          title: 等待话术
+          answer: "好的，您先忙，不着急。"
+        height: 107
+        id: "1732000018"
+        position:
+          x: 1440
+          y: 840
+        positionAbsolute:
+          x: 1440
+          y: 840
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: code
+          title: 知识注入（按需品牌车系）
+          desc: 品牌已确认 -> 只注入该品牌车系；未确认 -> 注入热门品牌精简表（不注入全部266品牌）
+          variables:
+            - variable: old_brand
+              value_selector:
+                - conversation
+                - brand
+            - variable: new_brand
+              value_selector:
+                - "1732000022"
+                - brand
+          code_language: python3
+          code: |
+            def main(old_brand, new_brand):
+                TOP_BRANDS = {
+                    "蔚来": ["EC6", "EC7", "ES6", "ES8", "ES9", "ET5", "ET5T", "ET7", "ET9"],
+                    "理想": ["L6", "L7", "L8", "L9", "MEGA", "i6", "i8"],
+                    "小鹏": ["G6", "G7", "G9", "X9", "P7", "P7+", "MONA M03", "MONA L03"],
+                    "特斯拉": ["Model 3", "Model Y", "Model S", "Model X"],
+                    "比亚迪": ["汉", "汉L", "唐", "唐L", "宋", "宋Pro", "元PLUS", "元UP", "海豹", "海豚", "海鸥", "秦L", "秦PLUS", "护卫舰07", "夏"],
+                    "问界": ["M5", "M6", "M7", "M8", "M9"],
+                    "小米": ["小米SU7", "小米YU7", "小米SU7 Ultra"],
+                    "极氪": ["ZEEKR 001", "ZEEKR 007", "ZEEKR 009", "ZEEKR 7X", "ZEEKR X", "ZEEKR MIX"],
+                    "领克": ["01", "03", "06", "07 EM-P", "08 EM-P", "09", "Z10", "Z20"],
+                    "极狐": ["极狐 阿尔法S5", "极狐 阿尔法T5", "极狐T1", "极狐考拉", "极狐 问道V9"],
+                    "阿维塔": ["06", "06T", "07", "11", "12"],
+                    "智己": ["智己L6", "智己L7", "智己LS6", "智己LS7"],
+                    "岚图": ["岚图FREE", "岚图梦想家", "岚图知音", "岚图追光"],
+                    "腾势": ["D9", "N7", "N9", "Z9", "Z9GT"],
+                    "方程豹": ["豹5", "豹8", "钛3", "钛7"],
+                    "仰望": ["U7", "U8", "U9"],
+                    "深蓝": ["深蓝S05", "深蓝S07", "深蓝S09", "深蓝L07", "深蓝SL03", "深蓝G318"],
+                    "长安": ["CS35PLUS", "CS55PLUS", "CS75PLUS", "UNI-V", "UNI-T", "UNI-K", "X5 PLUS", "X7 PLUS", "猎手"],
+                    "吉利": ["博越", "博越L", "帝豪", "星瑞", "星越L", "缤瑞", "缤越", "豪越L", "吉利ICON", "牛仔"],
+                    "吉利银河": ["银河E5", "银河E8", "银河L5", "银河L6", "银河L7", "银河M9", "星愿", "熊猫"],
+                    "长城": ["山海炮", "炮", "金刚炮", "风骏5", "风骏7"],
+                    "哈弗": ["H5", "H6", "H9", "大狗", "枭龙MAX PHEV", "猛龙PHEV"],
+                    "坦克": ["300", "400", "500", "700"],
+                    "魏牌": ["V8X", "摩卡", "蓝山", "高山"],
+                    "欧拉": ["好猫", "好猫GT", "芭蕾猫", "闪电猫"],
+                    "广汽传祺": ["传祺E8", "传祺E9", "传祺GS4", "传祺GS8", "传祺M6", "传祺M8", "影豹"],
+                    "埃安": ["AION S", "AION V", "AION Y", "AION RT", "AION UT", "AION LX"],
+                    "奇瑞": ["瑞虎7", "瑞虎8", "瑞虎8 PLUS", "瑞虎9", "探索06 C-DM", "艾瑞泽8", "欧萌达"],
+                    "捷途": ["X70", "X70 PLUS", "X90", "X90 PLUS", "大圣", "旅行者", "自由者"],
+                    "星途": ["凌云", "揽月", "星纪元 ES", "星纪元 ET", "瑶光", "追风"],
+                    "五菱": ["五菱宏光", "五菱宏光S", "五菱缤果", "五菱缤果PLUS", "五菱星光", "五菱星辰", "宏光MINIEV", "五菱凯捷"],
+                    "宝骏": ["云朵", "云海", "悦也", "悦也Plus", "享境", "KiWi EV"],
+                    "荣威": ["RX5", "D5X DMH", "D7", "i5", "iMAX8", "飞凡F7", "飞凡R7"],
+                    "名爵": ["MG4", "MG5", "MG6", "MG7", "MG Cyberster"],
+                    "东风风神": ["奕炫", "奕炫MAX", "皓极", "皓瀚", "风神AX7", "风神E70"],
+                    "东风奕派": ["奕派007", "奕派008", "奕派M8", "纳米01", "纳米06"],
+                    "奔腾": ["B70", "NAT", "小马", "悦意03"],
+                    "红旗": ["H5", "H6", "H7 PHEV", "H9", "HS5", "HS7", "E-QM5", "EH7"],
+                    "北京汽车": ["北京EU5 PLUS", "北京EU7", "北京X7", "魔方"],
+                    "北京越野": ["BJ30", "BJ40", "BJ60", "享野700"],
+                    "别克": ["E5", "GL8", "GL8 插电混动", "世纪", "君威", "君越", "威朗", "昂科威Plus", "昂科威S"],
+                    "雪佛兰": ["创酷", "太浩", "开拓者", "探界者", "探界者PLUS", "星迈罗"],
+                    "凯迪拉克": ["CT4", "CT5", "CT6", "XT4", "XT5", "XT6", "IQ锐歌"],
+                    "福特": ["Mustang", "探险者", "蒙迪欧", "锐界", "锐际", "领睿", "领裕", "电马"],
+                    "林肯": ["Z", "冒险家", "航海家", "领航员", "飞行家"],
+                    "丰田": ["凯美瑞", "卡罗拉", "汉兰达", "RAV4荣放", "威兰达", "赛那", "亚洲龙", "雷凌", "锋兰达", "格瑞维亚", "普拉多"],
+                    "本田": ["思域", "CR-V", "皓影", "冠道", "缤智", "奥德赛", "型格"],
+                    "日产": ["轩逸", "天籁", "奇骏", "逍客", "骐达", "ARIYA艾睿雅"],
+                    "马自达": ["3 昂克赛拉", "CX-5", "CX-50 行也", "EZ-6"],
+                    "大众": ["帕萨特", "迈腾", "速腾", "朗逸", "宝来", "探岳", "途观L", "途昂", "高尔夫", "ID.3", "ID.4 CROZZ"],
+                    "奥迪": ["A3", "A4L", "A5L", "A6L", "A7L", "Q2L", "Q3", "Q5L", "Q4 e-tron"],
+                    "宝马": ["3系", "5系", "7系", "X1", "X3", "X5", "iX3", "i3"],
+                    "奔驰": ["A级", "C级", "E级", "GLA", "GLB", "GLC", "GLE", "GLS", "S级", "EQE", "EQS"],
+                    "沃尔沃": ["S60", "S90", "XC40", "XC60", "XC90", "EX30", "EX90", "EM90"],
+                    "现代": ["伊兰特", "索纳塔", "途胜", "胜达", "库斯途", "ix35"],
+                    "起亚": ["K3", "K5", "EV5", "EV6", "嘉华", "狮铂拓界"],
+                    "捷豹": ["E-PACE", "XFL"],
+                    "路虎": ["卫士", "发现", "揽胜", "揽胜极光", "揽胜运动"],
+                    "保时捷": ["718", "911", "Cayenne", "Macan", "Panamera", "Taycan"],
+                    "雷克萨斯": ["ES", "GX", "LM", "LS", "LX", "NX", "RX", "RZ", "UX"],
+                    "零跑": ["零跑C10", "零跑C11", "零跑C16", "零跑B10"],
+                    "smart": ["精灵#1", "精灵#3", "精灵#5", "精灵#6"],
+                    "鸿蒙智行": ["享界S9", "尊界S800", "智界R7", "智界S7", "问界M5", "问界M7", "问界M9"],
+                    "乐道": ["L60", "L80", "L90"],
+                    "捷达": ["VA3", "VA7", "VS5", "VS7", "VS8"],
+                }
+                ALIAS = {
+                    "理想汽车": "理想", "ARCFOX极狐": "极狐", "零跑汽车": "零跑", "五菱汽车": "五菱",
+                    "智己汽车": "智己", "岚图汽车": "岚图", "深蓝汽车": "深蓝", "吉利汽车": "吉利",
+                    "小米汽车": "小米", "BYD": "比亚迪", "tesla": "特斯拉", "nio": "蔚来",
+                    "AITO": "问界", "鸿蒙智行": "鸿蒙智行",
+                }
+
+                def resolve(name):
+                    n = (name or "").strip()
+                    return ALIAS.get(n, n)
+
+                b = resolve(new_brand) or resolve(old_brand)
+                if b and b in TOP_BRANDS:
+                    series = "、".join(TOP_BRANDS[b])
+                    return {"kb_text": "【" + b + "】" + series}
+                if b:
+                    return {"kb_text": "【" + b + "】知识库暂无该品牌车系列表；如客户已报车系可直接确认，严禁编造车系。"}
+                popular = []
+                for name in ["蔚来", "理想", "小鹏", "特斯拉", "比亚迪", "问界", "小米", "极氪", "领克", "吉利", "吉利银河", "长安", "深蓝", "腾势", "红旗", "五菱", "宝骏", "广汽传祺", "埃安", "奇瑞", "捷途", "星途", "别克", "丰田", "本田", "大众", "奥迪", "宝马", "奔驰"]:
+                    if name in TOP_BRANDS:
+                        popular.append(name + "：" + "、".join(TOP_BRANDS[name][:6]))
+                return {"kb_text": "【热门品牌】" + "；".join(popular)}
+          outputs:
+            kb_text:
+              type: string
+        height: 220
+        id: "1732000021"
+        position:
+          x: 1720
+          y: 480
+        positionAbsolute:
+          x: 1720
+          y: 480
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: parameter-extractor
+          title: 参数提取（意图+槽位）
+          desc: 结构化抽取：意图（19类枚举）+ 品牌/车系/车型/城市/时间/姓氏/尾号
+          model:
+            provider: tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0
+              max_tokens: 300
+          query:
+            - "1732000002"
+            - normalized_text
+          parameters:
+            - name: intent
+              type: string
+              options:
+                - greet
+                - agree
+                - disagree
+                - confirm_brand
+                - confirm_model
+                - confirm_city
+                - confirm_time
+                - confirm_surname
+                - ask_vehicle
+                - filter_vehicle
+                - ask_recommend
+                - out_of_scope
+                - off_track
+                - unclear
+                - abuse
+                - dislike
+                - wait
+                - farewell
+                - unknown
+              description: 客户最新消息的意图类别
+              required: true
+            - name: brand
+              type: string
+              description: 客户明确说出的品牌（比亚迪/蔚来/特斯拉等）；否定句（我不是看X）不得提取，留空
+              required: false
+            - name: series
+              type: string
+              description: 客户明确说出的车系/车型（汉/ES8/Model 3）；只说了车系时可反推品牌
+              required: false
+            - name: model
+              type: string
+              description: 具体车型（可选）；未明确提及留空
+              required: false
+            - name: city
+              type: string
+              description: 客户说出的购车城市
+              required: false
+            - name: timing
+              type: string
+              description: 客户说出的购车时间表达（下个月/明年/年底/最近/不着急/已看车等）
+              required: false
+            - name: surname
+              type: string
+              description: 客户明确说的姓氏（我姓王/王先生）；仅此情况，否则留空
+              required: false
+            - name: phone_tail
+              type: string
+              description: 客户主动报出的4位手机尾号；未报留空
+              required: false
+          reasoning_mode: function_call
+          instruction: "只抽取客户最新消息中明确提到的字段，禁止根据上下文猜测或沿用旧值。'我不是看蔚来''不考虑分期'等否定句不得提取品牌/车系，intent 应为 disagree。客户只说了车系时可按知识反推品牌（如 汉->比亚迪、ES8->蔚来），但必须在标准知识库内，不编造。"
+          memory: null
+          vision:
+            enabled: false
+        height: 320
+        id: "1732000022"
+        position:
+          x: 1440
+          y: 480
+        positionAbsolute:
+          x: 1440
+          y: 480
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: code
+          title: 状态推进+槽位合并
+          desc: 移植 engine.ts/policy.ts：只进不退、intent下限、姓氏闭环、品牌切换清车系、车系反推品牌、时间归一
+          variables:
+            - variable: current_state
+              value_selector:
+                - conversation
+                - current_state
+            - variable: intent
+              value_selector:
+                - "1732000022"
+                - intent
+            - variable: brand
+              value_selector:
+                - "1732000022"
+                - brand
+            - variable: series
+              value_selector:
+                - "1732000022"
+                - series
+            - variable: model
+              value_selector:
+                - "1732000022"
+                - model
+            - variable: city
+              value_selector:
+                - "1732000022"
+                - city
+            - variable: timing
+              value_selector:
+                - "1732000022"
+                - timing
+            - variable: surname
+              value_selector:
+                - "1732000022"
+                - surname
+            - variable: phone_tail
+              value_selector:
+                - "1732000022"
+                - phone_tail
+            - variable: old_brand
+              value_selector:
+                - conversation
+                - brand
+            - variable: old_series
+              value_selector:
+                - conversation
+                - series
+            - variable: old_model
+              value_selector:
+                - conversation
+                - model
+            - variable: old_city
+              value_selector:
+                - conversation
+                - city
+            - variable: old_timing
+              value_selector:
+                - conversation
+                - timing
+            - variable: old_surname
+              value_selector:
+                - conversation
+                - surname
+            - variable: old_phone_tail
+              value_selector:
+                - conversation
+                - phone_tail
+          code_language: python3
+          code: |
+            import re
+
+            STATE_ORDER = ["GREETING", "BRAND_INQUIRY", "MODEL_INQUIRY", "CITY_INQUIRY", "TIMING_INQUIRY", "CONTACT_COLLECTION", "FAREWELL"]
+            STATE_INDEX = {s: i for i, s in enumerate(STATE_ORDER)}
+
+            INTENT_MIN = {
+                "confirm_brand": "MODEL_INQUIRY",
+                "confirm_model": "CITY_INQUIRY",
+                "confirm_city": "TIMING_INQUIRY",
+                "confirm_time": "CONTACT_COLLECTION",
+                "confirm_surname": "CONTACT_COLLECTION",
+                "abuse": "FAREWELL",
+                "dislike": "FAREWELL",
+                "farewell": "FAREWELL",
+            }
+
+            # 车系 -> 品牌 反推（精简表；未收录车系不强行归属）
+            SERIES_TO_BRAND = {
+                "汉": "比亚迪", "汉L": "比亚迪", "唐": "比亚迪", "唐L": "比亚迪", "宋": "比亚迪", "宋Pro": "比亚迪",
+                "元PLUS": "比亚迪", "元UP": "比亚迪", "海豹": "比亚迪", "海豚": "比亚迪", "海鸥": "比亚迪",
+                "秦": "比亚迪", "秦L": "比亚迪", "秦PLUS": "比亚迪", "护卫舰07": "比亚迪", "夏": "比亚迪",
+                "ES6": "蔚来", "ES8": "蔚来", "ES9": "蔚来", "ET5": "蔚来", "ET5T": "蔚来", "ET7": "蔚来", "ET9": "蔚来", "EC6": "蔚来", "EC7": "蔚来",
+                "Model 3": "特斯拉", "Model Y": "特斯拉", "Model S": "特斯拉", "Model X": "特斯拉",
+                "L6": "理想", "L7": "理想", "L8": "理想", "L9": "理想", "MEGA": "理想",
+                "M5": "问界", "M6": "问界", "M7": "问界", "M8": "问界", "M9": "问界",
+                "小米SU7": "小米", "小米YU7": "小米",
+                "ZEEKR 001": "极氪", "ZEEKR 007": "极氪", "ZEEKR 009": "极氪", "ZEEKR 7X": "极氪", "ZEEKR X": "极氪",
+                "P7": "小鹏", "G6": "小鹏", "G9": "小鹏", "X9": "小鹏", "MONA M03": "小鹏", "MONA L03": "小鹏",
+                "坦克300": "坦克", "坦克400": "坦克", "坦克500": "坦克", "坦克700": "坦克",
+                "哈弗H6": "哈弗", "哈弗H5": "哈弗", "大狗": "哈弗", "猛龙": "哈弗",
+                "蓝山": "魏牌", "高山": "魏牌", "摩卡": "魏牌",
+                "D9": "腾势", "N7": "腾势", "N9": "腾势", "Z9": "腾势",
+                "豹5": "方程豹", "豹8": "方程豹", "钛3": "方程豹", "钛7": "方程豹",
+                "U7": "仰望", "U8": "仰望", "U9": "仰望",
+                "GL8": "别克", "君威": "别克", "君越": "别克", "昂科威Plus": "别克", "昂科威S": "别克", "E5": "别克",
+                "凯美瑞": "丰田", "卡罗拉": "丰田", "汉兰达": "丰田", "RAV4荣放": "丰田", "威兰达": "丰田", "赛那": "丰田", "亚洲龙": "丰田", "雷凌": "丰田",
+                "思域": "本田", "CR-V": "本田", "皓影": "本田", "冠道": "本田", "缤智": "本田", "奥德赛": "本田",
+                "轩逸": "日产", "天籁": "日产", "奇骏": "日产", "逍客": "日产",
+                "帕萨特": "大众", "迈腾": "大众", "速腾": "大众", "朗逸": "大众", "宝来": "大众", "探岳": "大众", "途观L": "大众", "高尔夫": "大众",
+                "A3": "奥迪", "A4L": "奥迪", "A6L": "奥迪", "Q3": "奥迪", "Q5L": "奥迪",
+                "3系": "宝马", "5系": "宝马", "7系": "宝马", "X1": "宝马", "X3": "宝马", "X5": "宝马",
+                "C级": "奔驰", "E级": "奔驰", "GLC": "奔驰", "GLE": "奔驰", "GLS": "奔驰", "S级": "奔驰",
+                "S60": "沃尔沃", "S90": "沃尔沃", "XC40": "沃尔沃", "XC60": "沃尔沃", "XC90": "沃尔沃",
+                "伊兰特": "现代", "索纳塔": "现代", "途胜": "现代", "胜达": "现代",
+                "K3": "起亚", "K5": "起亚", "EV5": "起亚", "EV6": "起亚", "嘉华": "起亚",
+                "星瑞": "吉利", "星越L": "吉利", "博越": "吉利", "博越L": "吉利", "帝豪": "吉利", "缤越": "吉利",
+                "银河E5": "吉利银河", "银河L6": "吉利银河", "银河L7": "吉利银河", "银河M9": "吉利银河", "星愿": "吉利银河",
+                "L60": "乐道", "L80": "乐道", "L90": "乐道",
+                "精灵#1": "smart", "精灵#3": "smart", "精灵#5": "smart",
+                "零跑C10": "零跑", "零跑C11": "零跑", "零跑C16": "零跑", "零跑B10": "零跑",
+                "智己L6": "智己", "智己L7": "智己", "智己LS6": "智己",
+                "岚图FREE": "岚图", "岚图梦想家": "岚图", "岚图知音": "岚图",
+                "深蓝S05": "深蓝", "深蓝S07": "深蓝", "深蓝SL03": "深蓝", "深蓝G318": "深蓝",
+                "传祺E8": "广汽传祺", "传祺E9": "广汽传祺", "传祺GS8": "广汽传祺", "传祺M8": "广汽传祺",
+                "AION S": "埃安", "AION V": "埃安", "AION Y": "埃安",
+                "瑞虎8": "奇瑞", "瑞虎9": "奇瑞", "艾瑞泽8": "奇瑞",
+                "X70": "捷途", "X90": "捷途", "旅行者": "捷途", "大圣": "捷途",
+                "凌云": "星途", "揽月": "星途", "星纪元ES": "星途", "星纪元ET": "星途",
+                "H5": "红旗", "H6": "红旗", "H9": "红旗", "HS5": "红旗", "HS7": "红旗", "E-QM5": "红旗",
+                "BJ30": "北京越野", "BJ40": "北京越野", "BJ60": "北京越野",
+                "好猫": "欧拉", "闪电猫": "欧拉",
+                "CT5": "凯迪拉克", "XT5": "凯迪拉克",
+                "蒙迪欧": "福特", "探险者": "福特", "锐界": "福特",
+                "冒险家": "林肯", "航海家": "林肯",
+                "Macan": "保时捷", "Taycan": "保时捷", "Cayenne": "保时捷",
+                "ES": "雷克萨斯", "NX": "雷克萨斯", "RX": "雷克萨斯",
+                "卫士": "路虎", "揽胜": "路虎", "发现": "路虎",
+                "MG5": "名爵", "MG6": "名爵", "MG7": "名爵",
+                "RX5": "荣威", "D7": "荣威", "飞凡F7": "荣威",
+                "云朵": "宝骏", "云海": "宝骏", "悦也": "宝骏",
+                "五菱宏光": "五菱", "五菱缤果": "五菱", "五菱星光": "五菱", "宏光MINIEV": "五菱",
+                "享界S9": "享界", "智界R7": "智界", "智界S7": "智界", "尊界S800": "尊界",
+            }
+
+            TIMING_RULES = [
+                (re.compile(r"半个多?月|两周|十几天"), "半个月后"),
+                (re.compile(r"已经看过|已看过|看过车|看过了|已经去看过|已看车"), "已看车"),
+                (re.compile(r"看价格|看价钱|价格合适再|等价格|看价格再说"), "看价格"),
+                (re.compile(r"下个月|下月"), "下个月"),
+                (re.compile(r"这个月|本月"), "本月"),
+                (re.compile(r"最近|这几天|这周|本周|快了|马上|尽快|近期"), "近期"),
+                (re.compile(r"还早|不着急|慢慢看|先看看"), "不着急"),
+                (re.compile(r"明年"), "明年"),
+                (re.compile(r"今年"), "今年"),
+                (re.compile(r"年底|过年|春节前|年前"), "近期"),
+            ]
+            TIMING_ENUM = {"近期", "半个月后", "本月", "下个月", "今年", "明年", "不着急", "已看车", "看价格"}
+
+            def norm_timing(raw):
+                if not raw:
+                    return ""
+                t = raw.strip()
+                if t in TIMING_ENUM:
+                    return t
+                for pat, val in TIMING_RULES:
+                    if pat.search(t):
+                        return val
+                if re.match(r"^\d{1,2}月$", t):
+                    return "近期"
+                return t[:8]
+
+            def main(current_state, intent, brand, series, model, city, timing, surname, phone_tail, old_brand, old_series, old_model, old_city, old_timing, old_surname, old_phone_tail):
+                intent = (intent or "unknown").strip() or "unknown"
+                b = (old_brand or "").strip()
+                s = (old_series or "").strip()
+                m = (old_model or "").strip()
+                c = (old_city or "").strip()
+                t = (old_timing or "").strip()
+                sn = (old_surname or "").strip()
+                pt = (old_phone_tail or "").strip()
+
+                guard = intent in ("abuse", "dislike", "farewell", "wait")
+                if not guard and intent != "disagree":
+                    nb = (brand or "").strip()
+                    ns = (series or "").strip()
+                    if nb:
+                        if b and nb != b:
+                            s = ""  # 切换品牌 -> 清空旧车系
+                        b = nb
+                    if ns:
+                        s = ns
+                        if not b:
+                            b = SERIES_TO_BRAND.get(s, "")
+                    if (model or "").strip():
+                        m = model.strip()
+                    if (city or "").strip():
+                        c = city.strip()
+                    if timing:
+                        nt = norm_timing(timing)
+                        if nt:
+                            t = nt
+                    if (surname or "").strip():
+                        sn = surname.strip()
+                    if (phone_tail or "").strip():
+                        pt = phone_tail.strip()
+
+                info_complete = bool(b and s and c and t and sn)
+
+                # 状态推进：只进不退 + intent 下限 + 姓氏闭环 + 槽位推导下限
+                best = STATE_INDEX.get(current_state or "GREETING", 0)
+                min_state = INTENT_MIN.get(intent, "")
+                if min_state:
+                    best = max(best, STATE_INDEX.get(min_state, -1))
+                if sn or info_complete:
+                    best = max(best, STATE_INDEX["FAREWELL"])
+                if not b:
+                    slot_state = "BRAND_INQUIRY"
+                elif not s:
+                    slot_state = "MODEL_INQUIRY"
+                elif not c:
+                    slot_state = "CITY_INQUIRY"
+                elif not t:
+                    slot_state = "TIMING_INQUIRY"
+                elif not sn:
+                    slot_state = "CONTACT_COLLECTION"
+                else:
+                    slot_state = "FAREWELL"
+                best = max(best, STATE_INDEX[slot_state])
+                new_state = STATE_ORDER[best]
+
+                exception = "NONE"
+                if intent in ("abuse", "dislike"):
+                    exception = "ABUSE"
+                elif intent == "off_track":
+                    exception = "OFF_TRACK"
+                elif intent == "out_of_scope":
+                    exception = "OUT_OF_SCOPE"
+                elif intent == "unclear":
+                    exception = "UNCLEAR"
+
+                if not b:
+                    missing_label = "品牌"
+                elif not s:
+                    missing_label = "车系"
+                elif not c:
+                    missing_label = "购车城市"
+                elif not t:
+                    missing_label = "购车时间"
+                elif not sn:
+                    missing_label = "姓氏"
+                else:
+                    missing_label = "无（五项已齐，应告别）"
+
+                return {
+                    "new_state": new_state,
+                    "exception_state": exception,
+                    "brand": b,
+                    "series": s,
+                    "model": m,
+                    "city": c,
+                    "timing": t,
+                    "surname": sn,
+                    "phone_tail": pt,
+                    "info_complete": info_complete,
+                    "missing_label": missing_label,
+                }
+          outputs:
+            new_state:
+              type: string
+            exception_state:
+              type: string
+            brand:
+              type: string
+            series:
+              type: string
+            model:
+              type: string
+            city:
+              type: string
+            timing:
+              type: string
+            surname:
+              type: string
+            phone_tail:
+              type: string
+            info_complete:
+              type: boolean
+            missing_label:
+              type: string
+        height: 220
+        id: "1732000023"
+        position:
+          x: 2000
+          y: 480
+        positionAbsolute:
+          x: 2000
+          y: 480
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: assigner
+          title: 会话变量写回
+          desc: 写回新状态/异常/全部槽位/turn_count+1
+          version: "2"
+          items:
+            - variable_selector:
+                - conversation
+                - current_state
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000023"
+                - new_state
+            - variable_selector:
+                - conversation
+                - exception_state
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000023"
+                - exception_state
+            - variable_selector:
+                - conversation
+                - brand
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000023"
+                - brand
+            - variable_selector:
+                - conversation
+                - series
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000023"
+                - series
+            - variable_selector:
+                - conversation
+                - model
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000023"
+                - model
+            - variable_selector:
+                - conversation
+                - city
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000023"
+                - city
+            - variable_selector:
+                - conversation
+                - timing
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000023"
+                - timing
+            - variable_selector:
+                - conversation
+                - surname
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000023"
+                - surname
+            - variable_selector:
+                - conversation
+                - phone_tail
+              input_type: variable
+              operation: over-write
+              value:
+                - "1732000023"
+                - phone_tail
+            - variable_selector:
+                - conversation
+                - turn_count
+              input_type: constant
+              operation: "+="
+              value: 1
+        height: 210
+        id: "1732000024"
+        position:
+          x: 2280
+          y: 480
+        positionAbsolute:
+          x: 2280
+          y: 480
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: llm
+          title: 话术生成（纯文本流式）
+          desc: 输出纯文本话术（非JSON），LLM -> Answer 直连保证 SSE 流式
+          model:
+            provider: tongyi
+            name: qwen-plus
+            mode: chat
+            completion_params:
+              temperature: 0.7
+              max_tokens: 150
+          prompt_template:
+            - role: system
+              text: |-
+                你是汽车营销中心的外呼电话客服，任务是外呼线索初筛，收齐 品牌/车系/购车城市/购车时间/姓氏 五项后闭环。说话口语化、简短自然（1~3句），统一称呼客户为"您"。严禁输出"某先生/某女士"等称谓，严禁出现"您好/女士"这类脏模板。只输出话术本身，不要输出JSON、不要解释、不要加引号。
+
+                【状态】{{#conversation.current_state#}}
+                【已收集】品牌:{{#conversation.brand#}}、车系:{{#conversation.series#}}、城市:{{#conversation.city#}}、时间:{{#conversation.timing#}}、姓氏:{{#conversation.surname#}}
+                【本轮只问】{{#1732000023.missing_label#}}
+                【知识库】{{#1732000021.kb_text#}}
+
+                【规则】
+                1. 只收集：品牌、车系、购车城市、购车时间、姓氏；每轮只问【本轮只问】这一项，已收集字段绝不再问，也不重复确认。
+                2. 客户最新消息中已提到的字段视为已收集。
+                3. 否定（不需要/不考虑/不感兴趣/我不是看X）→ 一句柔性挽留后继续问缺失项，不要直接结束。
+                4. 辱骂→一句道歉结束；反感（别打了/骚扰/投诉）→一句安抚结束；等待→"好的，您先忙"；偏离话题→一句拉回继续；问价格/优惠/配置/试驾/现车→一句"由当地4S店按提车时间核算/到店介绍更准确"后继续问缺失项；听不清→礼貌追问。
+                5. 不编造车型、不主动问手机号、动力类型、配置、价格；客户主动报手机尾号只需确认收悉，不追问。
+                6. 五个字段都齐了或当前状态为 FAREWELL → 直接说告别语并结束。
+            - role: user
+              text: "{{#1732000002.normalized_text#}}"
+          prompt_config:
+            jinja2_variables:
+              - variable_selector:
+                  - conversation
+                  - current_state
+              - variable_selector:
+                  - conversation
+                  - brand
+              - variable_selector:
+                  - conversation
+                  - series
+              - variable_selector:
+                  - conversation
+                  - city
+              - variable_selector:
+                  - conversation
+                  - timing
+              - variable_selector:
+                  - conversation
+                  - surname
+              - variable_selector:
+                  - "1732000023"
+                  - missing_label
+              - variable_selector:
+                  - "1732000021"
+                  - kb_text
+              - variable_selector:
+                  - "1732000002"
+                  - normalized_text
+          memory:
+            role_prefix:
+              user: 用户
+              assistant: 客服
+            window:
+              enabled: true
+              size: 10
+          context:
+            enabled: false
+            variable_selector: null
+          vision:
+            enabled: false
+          structured_output: null
+          structured_output_enabled: false
+          reasoning_format: tagged
+        height: 190
+        id: "1732000025"
+        position:
+          x: 2560
+          y: 480
+        positionAbsolute:
+          x: 2560
+          y: 480
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          type: answer
+          title: 流式话术回复
+          answer: "{{#1732000025.text#}}"
+        height: 107
+        id: "1732000026"
+        position:
+          x: 2840
+          y: 480
+        positionAbsolute:
+          x: 2840
+          y: 480
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+    viewport:
+      x: 0
+      y: 0
+      zoom: 1

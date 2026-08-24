@@ -106,6 +106,17 @@ export interface AgentState {
   currentModelConfig: LLMModelConfig | null;
   /** Prompt token 估算 */
   promptTokenEstimate: number | null;
+  /**
+   * 场景政策元数据（pending 软匹配确认、stall 计数等）
+   * 口径见 policy.ts
+   */
+  policyMeta?: {
+    pendingSeries: string | null;
+    pendingBrand: string | null;
+    stallCount: number;
+    stallField: 'brand' | 'series' | 'city' | 'timing' | 'surname' | null;
+    rejectRetainUsed: boolean;
+  };
 }
 
 /** 详细延迟指标（用于性能分析） */

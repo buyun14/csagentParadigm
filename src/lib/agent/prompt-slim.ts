@@ -1,5 +1,6 @@
 import type { MainDialogState, CollectedSlots } from '@/lib/agent/types';
 import { knowledgeBase, resolveBrand } from './knowledge-base';
+import { buildPolicyPromptBlock, collectionFieldLabel, nextMissingField } from './policy';
 
 // 格式化槽位信息
 function formatSlots(slots: CollectedSlots): string {
@@ -19,7 +20,7 @@ const stateGoals: Record<MainDialogState, string> = {
 
 /**
  * 构建精简版 System Prompt（快通道用）
- * 特点：短角色设定 + 按需知识库 + 精简护栏 + 可选历史摘要
+ * 口径全文来自 policy.buildPolicyPromptBlock，禁止在此另写一套规则。
  */
 export function buildSlimPrompt(
   currentState: MainDialogState,
@@ -32,35 +33,25 @@ export function buildSlimPrompt(
     ? `\n【最近对话】\n${recentHistory.slice(-4).map(m => `${m.role === 'agent' ? '客服' : '客户'}: ${m.content}`).join('\n')}`
     : '';
   const summarySection = summary ? `\n${summary}` : '';
+  const missing = nextMissingField(slots);
 
-  return `你是汽车营销中心电话客服。口语化、简短、自然。严禁输出"某先生""某女士"称谓，统一称呼客户为"您"。
+  return `你是汽车营销中心电话客服。口语化、简短、自然。严禁输出"某先生""某女士"称谓，统一称呼客户为"您"；禁止"您好/女士"脏模板。
 
 【状态】${currentState}（${stateGoals[currentState]}）
-【已收集】品牌:${slots.brand || '无'}, 车系:${slots.series || '无'}, 城市:${slots.city || '无'}, 时间:${slots.timing || '无'}, 姓氏:${slots.surname || '无'}
-${kbSection}${summarySection}${historySection}
+【已收集】${formatSlots(slots)}
+【本轮只问】${collectionFieldLabel(missing)}
+${kbSection}
+${buildPolicyPromptBlock(slots)}${summarySection}${historySection}
 
-【规则】
-- 收集目标仅：品牌、车系、购车城市、购车时间、姓氏。严禁索要手机号/手机尾号（外呼主叫号已知）。
-- 客户最新消息中已提到的品牌/车系/城市/时间/姓氏视为已收集，绝不再问（如客户说"旅行者"即车系已收集；说"半个月以后"即时间已收集）。注意谐音（送plus=宋PLUS、维兰达=威兰达）。
-- 收集顺序：品牌→车系→购车城市→购车时间→姓氏。只问第一个缺失项；车系已给出后不要再列全系/追问版本。
-- 每轮最多问一个问题；【已收集】非空字段禁止回问开场句或重复确认。
-- 客户最新消息中提到的品牌/车系/城市/时间/姓氏，必须同步填入 entities（键用中文：品牌/车系/城市/时间/姓氏）；客户只说了车系没说明品牌时，品牌可从知识库推断补全（如汉→比亚迪）。
-- 问价格/优惠：不报精准价，说明由当地4S按提车时间核算，然后只问下一个缺失项；客户说"看价格"可记时间=看价格并推进，禁止与时间互卡死循环。
-- 客户说已看过车：时间记为已看车，推进姓氏/授权，不要反复约看车。
-- 五项齐备或姓氏收齐且其它已齐 → next_state=FAREWELL，禁止再要手机号。
-
-- 辱骂→道歉退出 | 反感→安抚退出 | 否定（不需要/不考虑/不感兴趣等）→柔性挽留（如"没关系的，先了解下价格做个参考也好嘛"），不要直接退出 | 偏离→拉回 | 不清晰→追问 | 不编造车型
+客户最新消息中的品牌/车系/城市/时间/姓氏必须写入 entities（中文键）；只说了车系时可从知识库反推品牌（如汉→比亚迪）。entities 填知识库标准名。
 
 返回JSON:
 {"intent":"意图","next_state":"下一状态","response":"回复","entities":{"品牌":"","车系":"","城市":"","时间":"","姓氏":""}}
 
 【next_state 必须严格是以下之一】GREETING / BRAND_INQUIRY / MODEL_INQUIRY / CITY_INQUIRY / TIMING_INQUIRY / CONTACT_COLLECTION / FAREWELL（未收集到新信息时保持当前状态）。
-【intent 参考】greet / agree / disagree / confirm_brand / confirm_model / confirm_city / confirm_time / confirm_surname / ask_price / out_of_scope / off_track / unclear / abuse / dislike / wait / farewell。`;
+【intent 参考】greet / agree / disagree / confirm_brand / confirm_model / confirm_city / confirm_time / confirm_surname / out_of_scope / off_track / unclear / abuse / dislike / wait / farewell。`;
 }
-//【intent 对应老系统的 hit 命中分支；无合适分支时用 off_track/unclear（老系统为 UNMATCH），严禁编造分支】
-//【response 对应老系统的回答分支话术；未命中任何分支时用礼貌引导话术】
-//- 严禁输出"某先生""某女士"称谓，一律称呼"您"
-// 手机尾号/动力类型（燃油、新能源）/配置/价格一律不问
+
 /**
  * 构建完整版 System Prompt（慢通道用）
  */
@@ -74,33 +65,20 @@ export function buildFullPrompt(
     ? `\n【对话历史】\n${fullHistory.map(m => `${m.role === 'agent' ? '客服' : '客户'}: ${m.content}`).join('\n')}`
     : '';
 
-  return `你是互联网汽车营销中心的电话客服坐席。通过外呼了解客户购车意向，收集品牌、车系、购车城市、购车时间与姓氏即可（手机号/尾号不收集，主叫号已知），确认客户口头授权后将信息授权给当地4S店报价。
+  return `你是互联网汽车营销中心的电话客服坐席。
 
-说话风格：自然口语化，像真人坐席，适当用语气词（嗯、哈、吧、呀），回复简短（1-3句），统一称呼客户为"您"，不猜测客户性别，不使用"先生/女士"。
+说话风格：自然口语化，像真人坐席，回复简短（1-3句），统一称呼"您"，不猜测性别，禁止"先生/女士"与"您好/女士"。
 
 【当前状态】${currentState}（${stateGoals[currentState]}）
-【已收集信息】
-- 品牌：${slots.brand || '未收集'}
-- 车系：${slots.series || '未收集'}
-- 购车城市：${slots.city || '未收集'}
-- 购车时间：${slots.timing || '未收集'}
-- 客户姓氏：${slots.surname || '未收集'}
-${kbSection}${historySection}
-
-【护栏规则】
-1. 客户辱骂 → "不好意思打扰了，祝您生活愉快，再见" → next_state: FAREWELL
-2. 客户反感（"又是推销""别打了"）→ "理解您的感受，不打扰了" → next_state: FAREWELL
-3. 偏离话题 → 简短回应后柔性拉回
-4. 问价格/优惠/配置 → "精准落地价对接当地4S核算"，然后只问下一个缺失项，禁止与时间互卡
-5. 输入不清晰 → 礼貌澄清
-6. 不编造知识库没有的车型
-7. 不一次问多个问题；收集目标仅品牌/车系/购车城市/购车时间/姓氏（严禁索要手机号），按顺序只问缺失的第一项，已收集的不再问
+【已收集】${formatSlots(slots)}
+【本轮只问】${collectionFieldLabel(nextMissingField(slots))}
+${kbSection}
+${buildPolicyPromptBlock(slots)}${historySection}
 
 返回JSON:
 {"emotion":"neutral/interested/annoyed/angry","entities":{...},"reasoning":"决策理由","guardrail_check":"护栏检查结果"}`;
 }
 
-// 精简版知识库（只注入当前品牌）
 function buildSlimKnowledgeSection(slots: CollectedSlots): string {
   if (slots.brand) {
     const brandData = knowledgeBase.brands[resolveBrand(slots.brand) || ''] || knowledgeBase.brands[slots.brand];
@@ -109,12 +87,10 @@ function buildSlimKnowledgeSection(slots: CollectedSlots): string {
       return `\n【${slots.brand}】${series}`;
     }
   }
-  // 没有品牌时，只列品牌名
   const brands = Object.keys(knowledgeBase.brands).join('、');
   return `\n【品牌】${brands}`;
 }
 
-// 完整版知识库
 function buildFullKnowledgeSection(slots: CollectedSlots): string {
   if (slots.brand) {
     const brandData = knowledgeBase.brands[resolveBrand(slots.brand) || ''] || knowledgeBase.brands[slots.brand];
@@ -123,23 +99,16 @@ function buildFullKnowledgeSection(slots: CollectedSlots): string {
       return `\n【知识库 - ${slots.brand}】\n${seriesList}`;
     }
   }
-  // 没有确定品牌时只列品牌名（全量车系会撑爆 context）
   const brandNames = Object.keys(knowledgeBase.brands).join('、');
   return `\n【可用品牌】${brandNames}`;
 }
 
-/**
- * 估算 prompt token 数（粗略：中文1字≈1.5token，英文1词≈1token）
- */
 export function estimateTokens(text: string): number {
   const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
   const otherChars = text.length - chineseChars;
   return Math.ceil(chineseChars * 1.5 + otherChars * 0.3);
 }
 
-/**
- * 慢通道 Prompt（完整版，用于情绪分析、实体深度抽取、决策推理）
- */
 export function buildSlowPrompt(
   state: MainDialogState,
   slots: CollectedSlots,
@@ -156,18 +125,20 @@ export function buildSlowPrompt(
 
 【状态】${state}
 【已收集】${slotsText}
+【本轮只问】${collectionFieldLabel(nextMissingField(slots))}
 ${summarySection}
 【对话历史】
 ${historyText}
 
 【快通道回复】${fastResponse}
 ${kbSection}
+${buildPolicyPromptBlock(slots)}
 
 请分析：
 1. 客户情绪（neutral/interested/annoyed/angry）
-2. 提取所有实体（品牌/车系/城市/时间/姓氏/车型/车身类型/动力类型/信息授权确认；键与老系统采集字段对应，未提及的字段留空；客户只说了车系时，品牌可从车系反推补全，如汉→比亚迪）
-3. 决策推理过程（为什么这样回复）
-4. 护栏检查结果（是否触发辱骂/反感/偏离/超范围；通过则输出 pass）
+2. 提取实体（品牌/车系/城市/时间/姓氏等；谐音错字填知识库标准名；未提及留空）
+3. 决策推理
+4. 护栏检查（辱骂/反感/偏离/超范围；通过则 pass）
 
 返回JSON：
 {"emotion":"...","entities":{...},"reasoning":"...","guardrail_check":"..."}`;

@@ -1,8 +1,28 @@
-import type { MainDialogState, ExceptionState, CollectedSlots } from './types';
-import { queryVehicleKB, getBrandSeries, resolveBrandFromSeries } from './knowledge-base';
-import type { IntentResult } from './intent';
+/**
+ * 规则状态机 — 只消费 policy.ts 口径
+ * 每轮：护栏 → pending 确认 → 入槽门禁 → 有限异议 → 只问下一缺失项
+ */
 
-// Agent 回复生成结果
+import type { MainDialogState, ExceptionState, CollectedSlots } from './types';
+import { queryVehicleKB, resolveBrandFromSeries } from './knowledge-base';
+import type { IntentResult } from './intent';
+import {
+  type PolicyMeta,
+  initialPolicyMeta,
+  turnQuestion,
+  nextMissingField,
+  advanceState,
+  isInfoComplete,
+  resolveObjection,
+  objectionBridge,
+  gateSeries,
+  commitPendingSeries,
+  clearPending,
+  updateStall,
+  stallExitReply,
+  normalizeTiming,
+} from './policy';
+
 export interface AgentResponse {
   reply: string;
   nextState: MainDialogState;
@@ -10,495 +30,285 @@ export interface AgentResponse {
   updatedSlots: CollectedSlots;
   reasoning: string;
   action: string;
+  updatedPolicyMeta: PolicyMeta;
 }
 
-/**
- * 获取当前状态应该追问的内容（已确认的信息不回问，直接引导下一步）
- */
-function getCurrentQuestion(state: MainDialogState, slots: CollectedSlots): string {
-  switch (state) {
-    case 'GREETING':
-      return '给您做一个报价，您参考了解一下哈，您看最近有比较关注哪款车呀？';
-    case 'BRAND_INQUIRY':
-      // 品牌已确认 → 不回问品牌，推进到车型
-      if (slots.brand) return '好的，那您看想了解哪款车呢？';
-      return '您看最近有比较关注哪个品牌的车呀？';
-    case 'MODEL_INQUIRY': {
-      // 车系已确认 → 不回问车系，推进到城市
-      if (slots.series) return '好的，请问您是在哪个城市购车呢？';
-      if (slots.brand) {
-        const series = getBrandSeries(slots.brand);
-        if (series.length > 0) {
-          return `${slots.brand}的话，有${series.join('、')}，您看您想了解哪款车呢？`;
-        }
-      }
-      return '您看想了解哪款车呢？';
-    }
-    case 'CITY_INQUIRY':
-      // 城市已确认 → 推进到时间
-      if (slots.city) return '考虑什么时候购车呀？有大概时间吗？';
-      return '请问您是在哪个城市购车呢？';
-    case 'TIMING_INQUIRY':
-      // 时间已确认 → 推进到联系方式（只收姓氏，不问手机号）
-      if (slots.timing) return '那稍后将信息授权给当地4S店给您精准报价，请问您贵姓啊？';
-      return '考虑什么时候购车呀？有大概时间吗？';
-    case 'CONTACT_COLLECTION':
-      if (!slots.surname) {
-        return '您贵姓啊？';
-      }
-      // 姓氏已确认，信息闭环，不再追问手机号
-      return '好的，信息已确认，稍后会有专人联系您，祝您购车顺利！';
-    case 'FAREWELL':
-      return '';
-    default:
-      return '';
+function brandListReply(brand: string): string {
+  const kbResult = queryVehicleKB({ brand });
+  if (kbResult.found && kbResult.results.length > 0) {
+    const names = kbResult.results.map((r) => r.name).slice(0, 12);
+    return `好的，${brand}有${names.join('、')}，您看您想了解哪款车呢？`;
   }
+  return `好的，${brand}。您想了解哪款车呢？`;
+}
+
+function farewellReply(slots: CollectedSlots): string {
+  const title = slots.surname || '您';
+  return slots.series
+    ? `${title}您好，稍后报价，早日提爱车，再见。`
+    : `${title}您好，稍后会有专人联系您，再见。`;
 }
 
 /**
- * 推进到下一个主流程状态
- */
-function getNextMainState(current: MainDialogState, slots: CollectedSlots): MainDialogState {
-  switch (current) {
-    case 'GREETING':
-      return 'BRAND_INQUIRY';
-    case 'BRAND_INQUIRY':
-      if (slots.brand) return 'MODEL_INQUIRY';
-      return 'BRAND_INQUIRY';
-    case 'MODEL_INQUIRY':
-      if (slots.series) return 'CITY_INQUIRY';
-      return 'MODEL_INQUIRY';
-    case 'CITY_INQUIRY':
-      if (slots.city) return 'TIMING_INQUIRY';
-      return 'CITY_INQUIRY';
-    case 'TIMING_INQUIRY':
-      if (slots.timing) return 'CONTACT_COLLECTION';
-      return 'TIMING_INQUIRY';
-    case 'CONTACT_COLLECTION':
-      if (slots.surname) return 'FAREWELL';
-      return 'CONTACT_COLLECTION';
-    case 'FAREWELL':
-      return 'FAREWELL';
-    default:
-      return current;
-  }
-}
-
-/**
- * 核心：基于当前状态和意图生成回复
+ * 核心：基于政策口径生成回复
  */
 export function generateResponse(
   currentState: MainDialogState,
-  exceptionState: ExceptionState,
+  _exceptionState: ExceptionState,
   slots: CollectedSlots,
   intentResult: IntentResult,
-  _dialogHistory: Array<{ role: string; content: string }>
+  _dialogHistory: Array<{ role: string; content: string }>,
+  policyMeta: PolicyMeta = initialPolicyMeta(),
+  customerText = ''
 ): AgentResponse {
-  const { intent, entities } = intentResult;
-  const newSlots = { ...slots };
+  const { intent, entities, seriesMatchMode } = intentResult;
+  let newSlots = { ...slots };
+  let meta = { ...policyMeta };
   let reasoning = '';
   let action = '';
   let reply = '';
-  let nextState = currentState;
   let nextException: ExceptionState = 'NONE';
+  const slotsBefore = { ...slots };
 
-  // === 护栏优先处理 ===
+  const finish = (
+    nextState: MainDialogState,
+    advanced: boolean
+  ): AgentResponse => {
+    const finalState = isInfoComplete(newSlots)
+      ? 'FAREWELL'
+      : advanceState(nextState === 'GREETING' ? 'BRAND_INQUIRY' : nextState, newSlots);
+    const stall = updateStall(meta, slotsBefore, newSlots, advanced || finalState === 'FAREWELL');
+    meta = stall.meta;
+    if (stall.shouldExit && finalState !== 'FAREWELL') {
+      return {
+        reply: stallExitReply(),
+        nextState: 'FAREWELL',
+        nextException: 'UNCLEAR',
+        updatedSlots: newSlots,
+        reasoning: `${reasoning}；同一缺失项连续未推进达上限，软退出`,
+        action: 'stall_exit',
+        updatedPolicyMeta: meta,
+      };
+    }
+    return {
+      reply,
+      nextState: finalState,
+      nextException,
+      updatedSlots: newSlots,
+      reasoning,
+      action,
+      updatedPolicyMeta: meta,
+    };
+  };
 
-  // 辱骂处理
+  // === 1. 护栏优先 ===
   if (intent === 'abuse') {
-    reasoning = '检测到辱骂/攻击性语言，触发护栏机制';
-    action = 'check_guardrail → 礼貌退出';
-    reply = '不好意思打扰了，祝您生活愉快，再见。';
-    nextState = 'FAREWELL';
+    reasoning = '辱骂护栏';
+    action = 'FAREWELL';
+    reply = objectionBridge('ABUSE', newSlots);
     nextException = 'ABUSE';
-    return { reply, nextState, nextException, updatedSlots: newSlots, reasoning, action };
+    return finish('FAREWELL', true);
   }
-
-  // 反感处理
   if (intent === 'dislike') {
-    reasoning = '检测到客户强烈反感，触发护栏机制';
-    action = 'check_guardrail → 理解并退出';
-    reply = '理解您的感受，那就不打扰了，如果有需要随时联系我们。祝您生活愉快！';
-    nextState = 'FAREWELL';
+    reasoning = '反感护栏';
+    action = 'FAREWELL';
+    reply = objectionBridge('DISLIKE', newSlots);
     nextException = 'ABUSE';
-    return { reply, nextState, nextException, updatedSlots: newSlots, reasoning, action };
+    return finish('FAREWELL', true);
   }
 
-  // === 实体收集（无论什么状态都先收集实体） ===
-  // 否定意图下客户提到的品牌/车系不是真实意向，不收集（防误收集/防覆盖已确认信息）
-  if (intent !== 'disagree') {
-    if (entities.brand) newSlots.brand = entities.brand;
-    if (entities.series) {
-      newSlots.series = entities.series;
-      if (!newSlots.brand) {
-        // 从车型推断品牌（统一走知识库反推，支持"汉DM-i"等变体）
-        newSlots.brand = resolveBrandFromSeries(entities.series);
+  // === 2. pending 软匹配确认 ===
+  if (meta.pendingSeries) {
+    if (intent === 'agree' || intent === 'confirm_model') {
+      const committed = commitPendingSeries(meta, newSlots);
+      if (committed) {
+        newSlots = committed.slots;
+        meta = committed.meta;
+        reasoning = `软匹配确认车系：${newSlots.series}`;
+        action = 'commit_pending_series';
+        reply = `${newSlots.series}可以的，${turnQuestion(newSlots, { listSeries: false })}`;
+        return finish(advanceState(currentState, newSlots), true);
       }
     }
+    if (intent === 'disagree') {
+      meta = clearPending(meta);
+      reasoning = '客户否定 pending 车系';
+      action = 'clear_pending';
+      reply = turnQuestion(newSlots, { listSeries: true });
+      return finish(advanceState(currentState, newSlots), false);
+    }
+    // 其它输入：重新提示确认，或若给出新精确车系则走门禁
+  }
+
+  // === 3. 实体入槽（经门禁；否定不收集） ===
+  if (intent !== 'disagree') {
+    if (entities.brand) {
+      newSlots.brand = entities.brand;
+      // 切换品牌时清空旧车系与 pending
+      if (slots.brand && entities.brand !== slots.brand) {
+        newSlots.series = null;
+        meta = clearPending(meta);
+      }
+    }
+
+    if (entities.series) {
+      const gate = gateSeries(
+        {
+          series: entities.series,
+          brand: entities.brand || resolveBrandFromSeries(entities.series),
+          mode: seriesMatchMode || 'exact',
+        },
+        newSlots,
+        meta
+      );
+      if (gate.action === 'commit') {
+        newSlots.series = gate.series;
+        if (gate.brand && !newSlots.brand) newSlots.brand = gate.brand;
+        meta = clearPending(meta);
+      } else if (gate.action === 'pending') {
+        // 软匹配：不入槽，只 pending
+        delete entities.series;
+        meta = {
+          ...meta,
+          pendingSeries: gate.series,
+          pendingBrand: gate.brand,
+        };
+        reasoning = `软匹配待确认：${gate.series}`;
+        action = 'pending_series_confirm';
+        reply = gate.confirmReply;
+        return finish(advanceState(currentState, newSlots), false);
+      } else {
+        // reject：不入槽
+        delete entities.series;
+      }
+    }
+
     if (entities.city) newSlots.city = entities.city;
-    if (entities.timing) newSlots.timing = entities.timing;
+    if (entities.timing) {
+      newSlots.timing = normalizeTiming(entities.timing) || entities.timing;
+    }
     if (entities.surname) newSlots.surname = entities.surname;
+    // 被动字段可回填，不驱动流程
     if (entities.phoneTail) newSlots.phoneTail = entities.phoneTail;
     if (entities.vehicleType) newSlots.vehicleType = entities.vehicleType;
     if (entities.powerType) newSlots.powerType = entities.powerType;
   }
 
-  // === 根据当前状态处理 ===
+  // 五项齐备 → 直接告别
+  if (isInfoComplete(newSlots)) {
+    reasoning = '五项采集齐备，闭环';
+    action = 'FAREWELL';
+    reply = farewellReply(newSlots);
+    return finish('FAREWELL', true);
+  }
 
-  // GREETING 状态
-  if (currentState === 'GREETING') {
-    if (intent === 'greet' || intent === 'agree') {
-      reasoning = '客户回应问候，开始进入营销流程';
-      action = '推进到 BRAND_INQUIRY';
-      reply = '价格合适的话，您这边考虑过买车吗？给您做一个报价，您参考了解一下哈，您看最近有比较关注哪款车呀？';
-      nextState = 'BRAND_INQUIRY';
-    } else if (intent !== 'disagree' && (intent === 'confirm_model' || entities.series)) {
-      reasoning = '客户直接说出车型';
-      action = '推进到 CITY_INQUIRY';
-      reply = `${entities.series}可以的，请问您是在哪个城市购车呢？`;
-      nextState = 'CITY_INQUIRY';
-    } else if (intent !== 'disagree' && (intent === 'confirm_brand' || entities.brand)) {
-      reasoning = '客户直接说出品牌，跳过品牌确认';
-      action = 'query_vehicle_kb → 推进到 MODEL_INQUIRY';
-      const kbResult = queryVehicleKB({ brand: newSlots.brand || entities.brand });
-      if (kbResult.found) {
-        const seriesNames = kbResult.results.map((r) => r.name);
-        reply = `好的，${newSlots.brand}有${seriesNames.join('、')}，您看您想了解哪款车呢？`;
-      } else {
-        reply = `好的，您关注${newSlots.brand}是吧，帮您查一下。您想了解哪款车呢？`;
-      }
-      nextState = 'MODEL_INQUIRY';
-    } else if (intent === 'disagree') {
-      reasoning = '客户表示不考虑买车';
-      action = '柔性挽留';
-      reply = '没关系的，买不买都没关系，先了解一下价格做个参考也好嘛。您最近有关注什么车吗？';
-      nextState = 'BRAND_INQUIRY';
-    } else if (intent === 'off_track' || intent === 'unknown') {
-      reasoning = '客户回应不明确或偏离';
-      action = '引导回营销流程';
-      reply = '是这样的，我们这边可以帮您做一个新车的报价，您参考了解一下。您最近有关注什么车吗？';
-      nextState = 'BRAND_INQUIRY';
-    } else {
-      reasoning = '客户输入无法明确识别';
-      action = '澄清并引导';
-      reply = '嗯，这边是互联网汽车营销中心的，想问下您最近有考虑买车吗？有关注什么车吗？';
-      nextState = 'BRAND_INQUIRY';
+  // === 4. 有限异议分支 ===
+  const objection = resolveObjection(intent, customerText || '');
+  if (objection === 'BUSY') {
+    reasoning = '客户在忙';
+    action = 'wait';
+    reply = objectionBridge('BUSY', newSlots);
+    return finish(currentState, false);
+  }
+  if (objection === 'ABUSE' || objection === 'DISLIKE') {
+    reply = objectionBridge(objection, newSlots);
+    nextException = 'ABUSE';
+    return finish('FAREWELL', true);
+  }
+  if (objection === 'REJECT') {
+    if (meta.rejectRetainUsed) {
+      reasoning = '否定挽留已用过，退出';
+      action = 'reject_exit';
+      reply = '好的，那不打扰您了，祝您生活愉快，再见。';
+      return finish('FAREWELL', true);
     }
-    return { reply, nextState, nextException, updatedSlots: newSlots, reasoning, action };
+    meta = { ...meta, rejectRetainUsed: true };
+    reasoning = '否定挽留一次';
+    action = 'reject_retain';
+    reply = objectionBridge('REJECT', newSlots);
+    return finish(advanceState(currentState, newSlots), false);
   }
-
-  // BRAND_INQUIRY 状态
-  if (currentState === 'BRAND_INQUIRY') {
-    if (intent !== 'disagree' && (intent === 'confirm_model' || entities.series)) {
-      // 客户直接报车系（可反推品牌）→ 跳过品牌追问
-      reasoning = `客户确认车型：${newSlots.series}${newSlots.brand ? `（品牌 ${newSlots.brand}）` : ''}`;
-      action = '推进到 CITY_INQUIRY';
-      reply = `${newSlots.series}可以的，请问您是在哪个城市购车呢？`;
-      nextState = 'CITY_INQUIRY';
-    } else if (intent !== 'disagree' && (intent === 'confirm_brand' || entities.brand)) {
-      reasoning = `客户确认品牌：${newSlots.brand}`;
-      action = 'query_vehicle_kb → 推进到 MODEL_INQUIRY';
-      const kbResult = queryVehicleKB({ brand: newSlots.brand! });
-      if (kbResult.found) {
-        const seriesNames = kbResult.results.map((r) => r.name);
-        reply = `好的，帮您查询一下。${newSlots.brand}有${seriesNames.join('、')}，您看您想了解哪款车呢？`;
-      } else {
-        reply = `${newSlots.brand}是吧，好的。不过目前这个品牌的信息可能不太全，您有其他关注的品牌吗？`;
-      }
-      nextState = 'MODEL_INQUIRY';
-    } else if (intent === 'disagree') {
-      // 对应老系统“挽回1”：客户否定/暂无意向时柔性挽留
-      reasoning = '客户否定/暂无明确意向';
-      action = '柔性挽留（挽回1）';
-      reply = '没关系的，买车不着急，先了解一下价格做个参考也好。您最近有关注什么品牌或车型吗？';
-      nextState = 'BRAND_INQUIRY';
-    } else if (intent === 'ask_recommend') {
-      reasoning = '客户请求推荐';
-      action = '引导选择品牌';
-      reply = '现在比较热门的有蔚来、比亚迪、理想、特斯拉、小鹏这些品牌，您有比较倾向哪个吗？';
-      nextState = 'BRAND_INQUIRY';
-    } else if (intent === 'filter_vehicle' && (entities.vehicleType || entities.powerType)) {
-      reasoning = '客户用类型/动力描述需求，但还没确定品牌';
-      action = '引导先选品牌';
-      reply = '好的，您想看' +
-        (entities.powerType || '') +
-        (entities.vehicleType || '') +
-        '，请问您比较关注哪个品牌呢？不同品牌的' +
-        (entities.vehicleType || '车型') +
-        '选择不太一样。';
-      nextState = 'BRAND_INQUIRY';
-    } else if (intent === 'agree') {
-      reasoning = '客户表示同意但没有给出品牌';
-      action = '追问品牌';
-      if (newSlots.brand) {
-        // 品牌已确认 → 不回问，推进到车型
-        reasoning = '品牌已确认，推进到车型选择';
-        action = '推进到 MODEL_INQUIRY';
-        reply = getCurrentQuestion('MODEL_INQUIRY', newSlots);
-        nextState = 'MODEL_INQUIRY';
-      } else {
-        reply = '那您最近有关注哪个品牌的车吗？';
-        nextState = 'BRAND_INQUIRY';
-      }
-    } else if (intent === 'off_track') {
-      reasoning = '客户偏离话题';
-      action = '柔性拉回';
-      nextException = 'OFF_TRACK';
-      reply = '嗯嗯，那回到买车这件事，您最近有关注什么品牌或车型吗？';
-      nextState = 'BRAND_INQUIRY';
-    } else {
-      reasoning = '无法识别客户意图';
-      action = '澄清追问';
-      nextException = 'UNCLEAR';
-      reply = '不好意思没太听清，您是说想了解哪个品牌的车呢？';
-      nextState = 'BRAND_INQUIRY';
+  if (objection === 'PRICE' || objection === 'CONFIG' || objection === 'CHANNEL' || objection === 'OFF_TOPIC') {
+    // 价格犹豫话术才记 timing=看价格；纯问价不自动填时间
+    if (objection === 'PRICE' && !newSlots.timing && /看价格|看价钱|价格合适|等价格|看价格再说/.test(customerText)) {
+      newSlots.timing = '看价格';
     }
-    return { reply, nextState, nextException, updatedSlots: newSlots, reasoning, action };
+    reasoning = `异议分支 ${objection}`;
+    action = `objection_${objection}`;
+    nextException = objection === 'OFF_TOPIC' ? 'OFF_TRACK' : 'OUT_OF_SCOPE';
+    reply = objectionBridge(objection, newSlots);
+    return finish(advanceState(currentState, newSlots), Boolean(entities.timing || newSlots.timing !== slots.timing));
   }
 
-  // MODEL_INQUIRY 状态
-  if (currentState === 'MODEL_INQUIRY') {
-    if (intent !== 'disagree' && (intent === 'confirm_model' || entities.series)) {
-      reasoning = `客户确认车型：${newSlots.series}`;
-      action = '推进到 CITY_INQUIRY';
-      reply = `${newSlots.series}可以的，请问您是在哪个城市购车呢？`;
-      nextState = 'CITY_INQUIRY';
-    } else if (intent === 'filter_vehicle' && newSlots.brand && (entities.vehicleType || entities.powerType)) {
-      // 知识库仅品牌+车系（无类型/动力字段），类型描述不再筛选，列出品牌全部车系供选择
-      reasoning = `客户用${entities.powerType || ''}${entities.vehicleType || ''}描述需求，知识库无类型字段，列出${newSlots.brand}全部车系`;
-      action = 'query_vehicle_kb → 展示全部车系';
-      const kbResult = queryVehicleKB({ brand: newSlots.brand });
-      const names = (kbResult.found ? kbResult.results : []).map((r) => r.name);
-      if (names.length > 0) {
-        reply = `${newSlots.brand}的话，有${names.join('、')}，您看您想了解哪款车呢？`;
-      } else {
-        reply = `好的，您关注${newSlots.brand}是吧，帮您查一下。您想了解哪款车呢？`;
-      }
-      nextState = 'MODEL_INQUIRY';
-    } else if (intent === 'ask_recommend') {
-      reasoning = '客户请求推荐车型';
-      action = '展示品牌车型列表';
-      if (newSlots.brand) {
-        const series = getBrandSeries(newSlots.brand);
-        reply = `${newSlots.brand}的话，有${series.join('、')}，您看您想了解哪款车呢？`;
-      } else {
-        reply = '您比较看重哪方面呢？比如空间大的SUV，还是操控好的轿车？';
-      }
-      nextState = 'MODEL_INQUIRY';
-    } else if (intent === 'ask_vehicle') {
-      reasoning = '客户询问有哪些车';
-      action = '展示车型列表';
-      if (newSlots.brand) {
-        const series = getBrandSeries(newSlots.brand);
-        reply = `${newSlots.brand}有${series.join('、')}，您看您想了解哪款车呢？`;
-      } else {
-        // 品牌未确认时追问品牌/车型，避免空回复
-        reasoning = '品牌未确认，引导确认车型';
-        reply = getCurrentQuestion('MODEL_INQUIRY', newSlots);
-      }
-      nextState = 'MODEL_INQUIRY';
-    } else if (intent === 'out_of_scope') {
-      reasoning = '客户问超范围问题（价格/配置等）';
-      action = '承认局限+引导继续流程';
-      nextException = 'OUT_OF_SCOPE';
-      // 价格异议软着陆：不报精准价，只问下一个缺失项（车系）
-      reply = '精准落地价要对接当地4S店按提车时间核算，我先帮您把车系确认好。您看选哪款车呢？';
-      nextState = 'MODEL_INQUIRY';
-    } else if (intent === 'confirm_brand' && entities.brand && entities.brand !== newSlots.brand) {
-      reasoning = `客户切换品牌到${entities.brand}`;
-      action = 'query_vehicle_kb → 更新品牌';
-      newSlots.brand = entities.brand;
-      newSlots.series = null;
-      const kbResult = queryVehicleKB({ brand: newSlots.brand });
-      if (kbResult.found) {
-        const seriesNames = kbResult.results.map((r) => r.name);
-        reply = `好的，${newSlots.brand}有${seriesNames.join('、')}，您看您想了解哪款车呢？`;
-      } else {
-        reply = `好的，${newSlots.brand}。您想了解哪款车呢？`;
-      }
-      nextState = 'MODEL_INQUIRY';
-    } else if (intent === 'agree') {
-      reasoning = '客户同意但没有指定车型';
-      action = '追问具体车型';
-      if (newSlots.series) {
-        // 车系已确认 → 不回问，推进到城市
-        reasoning = '车系已确认，推进到城市确认';
-        action = '推进到 CITY_INQUIRY';
-        reply = getCurrentQuestion('CITY_INQUIRY', newSlots);
-        nextState = 'CITY_INQUIRY';
-      } else if (newSlots.brand) {
-        const series = getBrandSeries(newSlots.brand);
-        reply = `那您看选哪款呢？${series.join('、')}，您看选哪个？`;
-      } else {
-        reply = '您看具体想了解哪款车呢？';
-      }
-    } else if (intent === 'off_track') {
-      reasoning = '客户偏离话题';
-      action = '柔性拉回';
-      nextException = 'OFF_TRACK';
-      if (newSlots.brand) {
-        const series = getBrandSeries(newSlots.brand);
-        reply = `嗯嗯，那咱们继续，${newSlots.brand}有${series.join('、')}，您看选哪款呢？`;
-      } else {
-        reply = '嗯嗯，那您看想了解哪款车呢？';
-      }
-      nextState = 'MODEL_INQUIRY';
+  // === 5. 正常采集推进 ===
+  const missing = nextMissingField(newSlots);
+
+  // 本轮刚确认了某实体
+  if (intent === 'confirm_model' && newSlots.series) {
+    reasoning = `确认车系 ${newSlots.series}`;
+    action = 'ask_next';
+    reply = `${newSlots.series}可以的，${turnQuestion(newSlots, { listSeries: false })}`;
+    return finish(advanceState(currentState, newSlots), true);
+  }
+  if (intent === 'confirm_brand' && newSlots.brand && !newSlots.series) {
+    reasoning = `确认品牌 ${newSlots.brand}`;
+    action = 'list_series';
+    reply = brandListReply(newSlots.brand);
+    return finish(advanceState(currentState, newSlots), true);
+  }
+  if (intent === 'confirm_city' && newSlots.city) {
+    reasoning = `确认城市 ${newSlots.city}`;
+    action = 'ask_next';
+    reply = `${newSlots.city}是吧？${turnQuestion(newSlots)}`;
+    return finish(advanceState(currentState, newSlots), true);
+  }
+  if (intent === 'confirm_time' && newSlots.timing) {
+    reasoning = `确认购车时间 ${newSlots.timing}`;
+    action = 'ask_next';
+    reply = turnQuestion(newSlots);
+    return finish(advanceState(currentState, newSlots), true);
+  }
+  if (intent === 'confirm_surname' && newSlots.surname) {
+    reasoning = `确认姓氏 ${newSlots.surname}`;
+    action = 'farewell';
+    reply = farewellReply(newSlots);
+    return finish('FAREWELL', true);
+  }
+
+  // 肯定但无新实体 → 问缺失项（不回问已收集）
+  if (intent === 'agree' || intent === 'greet') {
+    reasoning = intent === 'greet' ? '问候后进入采集' : '同意，追问缺失项';
+    action = 'ask_missing';
+    if (currentState === 'GREETING' && intent === 'greet') {
+      reply =
+        '价格合适的话，您这边考虑过买车吗？给您做一个报价，您参考了解一下哈，您看最近有比较关注哪款车呀？';
     } else {
-      reasoning = '无法识别客户意图';
-      action = '澄清追问';
-      nextException = 'UNCLEAR';
-      reply = '不好意思没太听清，您是想了解哪款车呢？';
-      nextState = 'MODEL_INQUIRY';
+      reply = turnQuestion(newSlots, { listSeries: missing === 'series' });
     }
-    return { reply, nextState, nextException, updatedSlots: newSlots, reasoning, action };
+    return finish(advanceState(currentState === 'GREETING' ? 'BRAND_INQUIRY' : currentState, newSlots), false);
   }
 
-  // CITY_INQUIRY 状态
-  if (currentState === 'CITY_INQUIRY') {
-    if (intent !== 'disagree' && (intent === 'confirm_city' || entities.city)) {
-      reasoning = `客户确认城市：${newSlots.city}`;
-      action = '推进到 TIMING_INQUIRY';
-      reply = `${newSlots.city}是吧？考虑什么时候购车呀？有大概时间吗？`;
-      nextState = 'TIMING_INQUIRY';
-    } else if (intent === 'out_of_scope') {
-      reasoning = '客户问超范围问题';
-      action = '承认局限+引导继续流程';
-      nextException = 'OUT_OF_SCOPE';
-      reply = '精准落地价要对接当地4S店核算，我先帮您确认购车城市。请问您是在哪个城市购车呢？';
-      nextState = 'CITY_INQUIRY';
-    } else if (intent === 'agree') {
-      reasoning = '客户同意但没给出城市';
-      action = '追问城市';
-      if (newSlots.city) {
-        // 城市已确认 → 不回问，推进到时间
-        reasoning = '城市已确认，推进到购车时间';
-        action = '推进到 TIMING_INQUIRY';
-        reply = getCurrentQuestion('TIMING_INQUIRY', newSlots);
-        nextState = 'TIMING_INQUIRY';
-      } else {
-        reply = '请问您是在哪个城市购车呢？';
-        nextState = 'CITY_INQUIRY';
-      }
-    } else if (intent === 'off_track') {
-      reasoning = '客户偏离话题';
-      action = '柔性拉回';
-      nextException = 'OFF_TRACK';
-      reply = '嗯嗯，请问您是在哪个城市购车呢？';
-      nextState = 'CITY_INQUIRY';
-    } else {
-      reasoning = '无法识别';
-      action = '澄清追问';
-      nextException = 'UNCLEAR';
-      reply = '不好意思没太听清，请问您是在哪个城市购车呢？';
-      nextState = 'CITY_INQUIRY';
-    }
-    return { reply, nextState, nextException, updatedSlots: newSlots, reasoning, action };
+  // ask_vehicle：仅在缺车系且有品牌时列一次表，否则拉回缺失项
+  if (intent === 'ask_vehicle') {
+    reasoning = '询问车系列表';
+    action = 'ask_missing';
+    reply = turnQuestion(newSlots, { listSeries: true });
+    return finish(advanceState(currentState, newSlots), false);
   }
 
-  // TIMING_INQUIRY 状态
-  if (currentState === 'TIMING_INQUIRY') {
-    if (intent !== 'disagree' && (intent === 'confirm_time' || entities.timing)) {
-      reasoning = `客户确认购车时间：${newSlots.timing}`;
-      action = '推进到 CONTACT_COLLECTION';
-      const modelInfo = newSlots.series
-        ? `${newSlots.series}${newSlots.city ? `在${newSlots.city}` : ''}的最新底价`
-        : '报价信息';
-      reply = `好的，那稍后将您信息授权合作伙伴当地四S店给您提供精准落地价，您保持手机畅通，听一下${modelInfo}，参考下价格好吧。您贵姓啊？`;
-      nextState = 'CONTACT_COLLECTION';
-    } else if (intent === 'out_of_scope') {
-      // 价格异议软着陆：不与时间互卡；给到店核价预期后继续只问购车时间一次
-      reasoning = '客户问超范围问题（多为价格）';
-      action = '价格软着陆+继续收集购车时间';
-      nextException = 'OUT_OF_SCOPE';
-      reply = '精准落地价要看提车时间和当地政策，我帮您对接4S店核算。您大概近期购车，还是再看看？';
-      nextState = 'TIMING_INQUIRY';
-    } else if (intent === 'agree') {
-      reasoning = '客户同意但没给出时间';
-      action = '追问时间';
-      if (newSlots.timing) {
-        // 时间已确认 → 不回问，推进到联系方式
-        reasoning = '时间已确认，推进到联系方式收集';
-        action = '推进到 CONTACT_COLLECTION';
-        reply = getCurrentQuestion('CONTACT_COLLECTION', newSlots);
-        nextState = 'CONTACT_COLLECTION';
-      } else {
-        reply = '那您大概考虑什么时候购车呢？';
-        nextState = 'TIMING_INQUIRY';
-      }
-    } else if (intent === 'off_track') {
-      reasoning = '客户偏离话题';
-      action = '柔性拉回';
-      nextException = 'OFF_TRACK';
-      reply = '嗯嗯，那您大概考虑什么时候购车呢？';
-      nextState = 'TIMING_INQUIRY';
-    } else {
-      reasoning = '无法识别';
-      action = '澄清追问';
-      nextException = 'UNCLEAR';
-      reply = '不好意思没太听清，您考虑什么时候购车呀？';
-      nextState = 'TIMING_INQUIRY';
-    }
-    return { reply, nextState, nextException, updatedSlots: newSlots, reasoning, action };
-  }
+  // 不清晰 / 未知 → 追问缺失项（计 stall）
+  reasoning = '无法识别，追问缺失项';
+  action = 'clarify';
+  nextException = 'UNCLEAR';
+  reply =
+    missing === 'series' || missing === 'brand'
+      ? `不好意思没太听清，${turnQuestion(newSlots, { listSeries: true })}`
+      : `不好意思没太听清，${turnQuestion(newSlots)}`;
+  return finish(advanceState(currentState, newSlots), false);
+}
 
-  // CONTACT_COLLECTION 状态
-  if (currentState === 'CONTACT_COLLECTION') {
-    if (intent !== 'disagree' && (intent === 'confirm_surname' || entities.surname)) {
-      reasoning = `客户确认姓氏：${newSlots.surname}`;
-      action = '推进到 FAREWELL';
-      const title = newSlots.surname;
-      const modelDesc = newSlots.series
-        ? `${newSlots.series}${newSlots.city ? `在${newSlots.city}` : ''}`
-        : '报价';
-      reply = `${title}您好${newSlots.series ? `，稍后报价，早日提爱车` : '，稍后会有专人联系您'}，再见。`;
-      nextState = 'FAREWELL';
-    } else if (intent === 'out_of_scope') {
-      reasoning = '客户问超范围问题';
-      action = '承认局限+引导继续流程';
-      nextException = 'OUT_OF_SCOPE';
-      reply = '好的，这些四S店的专业顾问会给您详细介绍的。请问您贵姓啊？';
-      nextState = 'CONTACT_COLLECTION';
-    } else if (intent === 'off_track') {
-      reasoning = '客户偏离话题';
-      action = '柔性拉回';
-      nextException = 'OFF_TRACK';
-      reply = '嗯嗯，那请问您贵姓啊？';
-      nextState = 'CONTACT_COLLECTION';
-    } else if (intent === 'agree') {
-      reasoning = '客户同意但没给出姓氏';
-      action = '追问姓氏';
-      if (newSlots.surname) {
-        // 姓氏已确认 → 信息闭环，推进结束
-        reasoning = '姓氏已确认，信息闭环';
-        action = '推进到 FAREWELL';
-        reply = getCurrentQuestion('CONTACT_COLLECTION', newSlots);
-        nextState = 'FAREWELL';
-      } else {
-        reply = '那请问您贵姓啊？';
-        nextState = 'CONTACT_COLLECTION';
-      }
-    } else {
-      reasoning = '无法识别';
-      action = '澄清追问';
-      nextException = 'UNCLEAR';
-      reply = '不好意思没太听清，请问您贵姓啊？';
-      nextState = 'CONTACT_COLLECTION';
-    }
-    return { reply, nextState, nextException, updatedSlots: newSlots, reasoning, action };
-  }
-
-  // FAREWELL 状态
-  if (currentState === 'FAREWELL') {
-    reasoning = '对话已结束';
-    action = '保持结束状态';
-    reply = '感谢您的时间，祝您生活愉快，再见！';
-    nextState = 'FAREWELL';
-    return { reply, nextState, nextException, updatedSlots: newSlots, reasoning, action };
-  }
-
-  // 默认兜底
-  reasoning = '未匹配到任何状态处理逻辑';
-  action = '兜底回复';
-  reply = '嗯，您看还有什么想了解的吗？';
-  return { reply, nextState: currentState, nextException, updatedSlots: newSlots, reasoning, action };
+/** @deprecated 保留给旧测试：等价于 turnQuestion */
+export function getCurrentQuestionForTest(state: MainDialogState, slots: CollectedSlots): string {
+  void state;
+  return turnQuestion(slots);
 }

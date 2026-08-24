@@ -119,28 +119,35 @@ describe('resolveBrandFromSeries 车系反推品牌', () => {
 });
 
 describe('matchSeriesFromText 文本内车系匹配', () => {
-  it('旅行者 → 捷途/旅行者', () => {
-    expect(matchSeriesFromText('旅行者')).toEqual({ series: '旅行者', brand: '捷途' });
+  it('旅行者 → 捷途/旅行者（exact）', () => {
+    expect(matchSeriesFromText('旅行者')).toEqual({ series: '旅行者', brand: '捷途', soft: false });
   });
 
   it('五菱缤果S → 缤果S', () => {
     const hit = matchSeriesFromText('五菱缤果S');
     expect(hit?.series).toBe('缤果S');
     expect(hit?.brand).toBe('五菱汽车');
+    expect(hit?.soft).toBe(false);
   });
 
   it('宋PLUS 最长匹配优先于宋', () => {
     const hit = matchSeriesFromText('宋PLUS');
     expect(hit?.series).toBe('宋PLUS');
     expect(hit?.brand).toBe('比亚迪');
+    expect(hit?.soft).toBe(false);
   });
 
   it('品牌限定时优先该品牌车系', () => {
     const hit = matchSeriesFromText('旅行者', '捷途');
-    expect(hit).toEqual({ series: '旅行者', brand: '捷途' });
+    expect(hit).toEqual({ series: '旅行者', brand: '捷途', soft: false });
   });
 
   it('空输入 → null', () => {
     expect(matchSeriesFromText('')).toBeNull();
+  });
+
+  it('维兰达 → soft 近音', () => {
+    const hit = matchSeriesFromText('维兰达');
+    expect(hit).toEqual({ series: '威兰达', brand: '丰田', soft: true });
   });
 });

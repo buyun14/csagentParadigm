@@ -1,12 +1,15 @@
 import type { IntentType } from './types';
 import { resolveBrand, resolveType, resolvePower, matchSeriesFromText } from './knowledge-base';
 import { correctAsrText } from './asr-corrections';
+import { normalizeTiming } from './policy';
 
 // 意图识别结果
 export interface IntentResult {
   intent: IntentType;
   entities: Record<string, string>;
   confidence: number;
+  /** 车系匹配模式：exact 可直接入槽；soft 须经 EntityGate pending 确认 */
+  seriesMatchMode?: 'exact' | 'soft';
 }
 
 // 问候词
@@ -169,10 +172,14 @@ function matchesAgree(text: string): boolean {
 
 /**
  * 意图识别
+ * @param input 客户原文（多来自 ASR）
+ * @param opts.brandHint 已确认品牌时传入，近音软匹配优先在该品牌车系内纠错
  */
-export function recognizeIntent(input: string): IntentResult {
-  // 先做 ASR 谐音/热词归一化（未来→蔚来、一十八→ES8、毛豆歪→Model Y 等），
-  // 后续实体提取与意图判断都基于纠正后的文本
+export function recognizeIntent(
+  input: string,
+  opts?: { brandHint?: string | null }
+): IntentResult {
+  // 先做 ASR 结构型归一化（字母数字谐音等），中文近音交给车系软匹配
   const text = correctAsrText(input).trim();
 
   // 空输入
@@ -217,11 +224,12 @@ export function recognizeIntent(input: string): IntentResult {
     }
   }
 
-  // 提取时间（购车时间）
+  // 提取时间（购车时间）→ 归一到政策枚举
   for (const tp of timePatterns) {
     const match = text.match(tp.regex);
     if (match) {
-      entities.timing = tp.value || match[0];
+      const rawTiming = tp.value || match[0];
+      entities.timing = normalizeTiming(rawTiming) || rawTiming;
       break;
     }
   }
@@ -267,27 +275,33 @@ export function recognizeIntent(input: string): IntentResult {
     entities.phoneTail = text;
   }
 
-  // 提取车系：走全量知识库（品牌已识别时优先在该品牌下最长匹配）
-  const seriesHit = matchSeriesFromText(text, entities.brand || null);
+  // 提取车系：全量知识库精确匹配 → 近音软匹配；品牌 hint 优先
+  const brandHint = opts?.brandHint || entities.brand || null;
+  const seriesHit = matchSeriesFromText(text, brandHint);
+  let seriesMatchMode: 'exact' | 'soft' | undefined;
   if (seriesHit) {
     entities.series = seriesHit.series;
     if (seriesHit.brand && !entities.brand) {
       entities.brand = seriesHit.brand;
     }
+    seriesMatchMode = seriesHit.soft ? 'soft' : 'exact';
   }
+
+  const withMode = (r: IntentResult): IntentResult =>
+    seriesMatchMode ? { ...r, seriesMatchMode } : r;
 
   // 4. 判断意图
   // 告别
   for (const word of farewellWords) {
     if (text.includes(word)) {
-      return { intent: 'farewell', entities, confidence: 0.85 };
+      return withMode({ intent: 'farewell', entities, confidence: 0.85 });
     }
   }
 
   // 等待
   for (const word of waitWords) {
     if (text.includes(word)) {
-      return { intent: 'wait', entities, confidence: 0.8 };
+      return withMode({ intent: 'wait', entities, confidence: 0.8 });
     }
   }
 
@@ -299,7 +313,7 @@ export function recognizeIntent(input: string): IntentResult {
     // “是不是…”是疑问句，其中的“不是”子串不是否定表达
     if (word === '不是' && /是不是/.test(text)) continue;
     if (text.includes(word)) {
-      return { intent: 'disagree', entities, confidence: 0.8 };
+      return withMode({ intent: 'disagree', entities, confidence: 0.8 });
     }
   }
 
@@ -307,51 +321,51 @@ export function recognizeIntent(input: string): IntentResult {
   if (text.length <= 5) {
     for (const word of greetWords) {
       if (text === word || text.includes(word)) {
-        return { intent: 'greet', entities, confidence: 0.8 };
+        return withMode({ intent: 'greet', entities, confidence: 0.8 });
       }
     }
   }
 
   // 有实体提取到 → 优先于超范围/肯定（避免「已看车」被看车类超范围吃掉、「旅行者」被「行」误判）
-  if (entities.surname) return { intent: 'confirm_surname', entities, confidence: 0.9 };
-  if (entities.city) return { intent: 'confirm_city', entities, confidence: 0.9 };
-  if (entities.timing) return { intent: 'confirm_time', entities, confidence: 0.9 };
-  if (entities.series) return { intent: 'confirm_model', entities, confidence: 0.9 };
-  if (entities.brand && !entities.series) return { intent: 'confirm_brand', entities, confidence: 0.85 };
-  if (entities.vehicleType || entities.powerType) return { intent: 'filter_vehicle', entities, confidence: 0.8 };
+  if (entities.surname) return withMode({ intent: 'confirm_surname', entities, confidence: 0.9 });
+  if (entities.city) return withMode({ intent: 'confirm_city', entities, confidence: 0.9 });
+  if (entities.timing) return withMode({ intent: 'confirm_time', entities, confidence: 0.9 });
+  if (entities.series) return withMode({ intent: 'confirm_model', entities, confidence: 0.9 });
+  if (entities.brand && !entities.series) return withMode({ intent: 'confirm_brand', entities, confidence: 0.85 });
+  if (entities.vehicleType || entities.powerType) return withMode({ intent: 'filter_vehicle', entities, confidence: 0.8 });
 
   // 超范围问题
   for (const pattern of outOfScopePatterns) {
     if (pattern.test(text)) {
-      return { intent: 'out_of_scope', entities, confidence: 0.75 };
+      return withMode({ intent: 'out_of_scope', entities, confidence: 0.75 });
     }
   }
 
   // 肯定/同意
   if (matchesAgree(text)) {
-    return { intent: 'agree', entities, confidence: 0.8 };
+    return withMode({ intent: 'agree', entities, confidence: 0.8 });
   }
 
-  // 请求推荐
+  // 请求推荐 → 政策上映射为偏离拉回（不当导购主路径）
   if (/推荐|建议|帮我选|你觉得|哪个好的/.test(text)) {
-    return { intent: 'ask_recommend', entities, confidence: 0.75 };
+    return withMode({ intent: 'ask_recommend', entities, confidence: 0.75 });
   }
 
   // 询问车辆信息
   if (/有什么车|哪些车|有什么.*车型|车系列/.test(text)) {
-    return { intent: 'ask_vehicle', entities, confidence: 0.75 };
+    return withMode({ intent: 'ask_vehicle', entities, confidence: 0.75 });
   }
 
   // 不清晰
   if (text.length <= 2 && !Object.keys(entities).length) {
-    return { intent: 'unclear', entities, confidence: 0.5 };
+    return withMode({ intent: 'unclear', entities, confidence: 0.5 });
   }
 
   // 有实体但无法明确归类 → 根据当前状态判断（交给状态机处理）
   if (Object.keys(entities).length > 0) {
-    return { intent: 'unknown', entities, confidence: 0.6 };
+    return withMode({ intent: 'unknown', entities, confidence: 0.6 });
   }
 
   // 完全无法识别
-  return { intent: 'off_track', entities: {}, confidence: 0.5 };
+  return withMode({ intent: 'off_track', entities: {}, confidence: 0.5 });
 }
